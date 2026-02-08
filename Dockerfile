@@ -1,6 +1,7 @@
 # VocalEnhancer worker: Resemble Enhance on RunPod (always-on pod).
 # Build from repo root: docker build -t vocal-enhancer-worker .
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+# Use 12.1.1 (supported); 12.1.0 is deprecated per NVIDIA container support policy.
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
