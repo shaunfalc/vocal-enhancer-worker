@@ -152,12 +152,13 @@ def _process_job(job_id: str, input_url: str) -> None:
             from resemble_enhance.enhancer.inference import denoise, enhance
 
             dwav, sr = torchaudio.load(str(input_path))
-            dwav = dwav.mean(dim=0).unsqueeze(0)  # mono
+            dwav = dwav.mean(dim=0)  # mono: (samples,)
             device = _get_device()
             dwav = dwav.to(device)
 
-            # Denoise then enhance (same as Resemble app.py: lambd=0.9 for denoising)
+            # Denoise then enhance; Resemble Enhance expects 1D waveform
             wav_denoised, sr_denoise = denoise(dwav, sr, device)
+            wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
             wav_out, new_sr = enhance(
                 wav_denoised, sr_denoise, device,
                 nfe=64, solver="midpoint", lambd=0.1, tau=0.5
