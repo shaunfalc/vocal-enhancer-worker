@@ -158,11 +158,22 @@ def _process_job(job_id: str, input_url: str) -> None:
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }).eq("id", job_id).execute()
 
-        # Deduct usage
-        supabase.rpc(
-            "record_usage_and_deduct_credit",
-            {"p_user_id": user_id, "p_duration_minutes": duration_minutes}
-        ).execute()
+        # Deduct usage (retry once on failure to avoid completed-but-not-billed)
+        rpc_args = {"p_user_id": user_id, "p_duration_minutes": duration_minutes}
+
+        def _deduct() -> None:
+            supabase.rpc("record_usage_and_deduct_credit", rpc_args).execute()
+
+        try:
+            _deduct()
+        except Exception as rpc_err:
+            import logging
+            logging.warning(
+                "record_usage_and_deduct_credit failed, retrying once: job_id=%s err=%s",
+                job_id,
+                rpc_err,
+            )
+            _deduct()
 
     except Exception as e:
         err_msg = str(e)[:500]
