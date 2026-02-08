@@ -1,6 +1,18 @@
 # VocalEnhancer Worker
 
-Python worker for [VocalEnhancer](https://github.com/your-org/vocal-enhancer): accepts enhancement jobs, runs [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (denoise + enhance), and uploads results to Supabase. Designed to run on an **always-on RunPod dedicated pod** with GPU.
+Python worker for VocalEnhancer: accepts enhancement jobs, runs [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (denoise + enhance), and uploads results to Supabase. Designed to run on an **always-on RunPod dedicated pod** with GPU.
+
+## Push to GitHub
+
+From the repo root:
+
+```bash
+git remote add origin https://github.com/YOUR_ORG/vocal-enhancer-worker.git
+git branch -M main
+git push -u origin main
+```
+
+Or with SSH: `git@github.com:YOUR_ORG/vocal-enhancer-worker.git`. Create the repository on GitHub first (empty, no README).
 
 ## Contract
 
