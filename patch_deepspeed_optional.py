@@ -249,20 +249,24 @@ from torch import nn"""
 
 def patch_enhancer_denoiser_device():
     """Make Enhancer pass device to load_denoiser and load_enhancer pass device to Enhancer."""
-    # 1. enhancer/enhancer.py: add device param to __init__, use it in load_denoiser
+    # 1. enhancer/enhancer.py: add device param to __init__, use it in load_denoiser (allow any indent)
     path_enh = base / "enhancer" / "enhancer.py"
     if not path_enh.exists():
         print("patch failed: enhancer/enhancer.py not found", file=sys.stderr)
         return False
     text = path_enh.read_text()
-    if 'def __init__(self, hp: HParams):' in text:
-        text = text.replace('def __init__(self, hp: HParams):', 'def __init__(self, hp: HParams, device="cpu"):', 1)
-    elif 'def __init__(self, hp: HParams, device="cpu"):' not in text:
+    if re.search(r'def __init__\(self, hp: HParams, device="cpu"\):', text):
+        pass  # already patched
+    elif re.search(r'def __init__\(self, hp: HParams\):', text):
+        text = re.sub(r'def __init__\(self, hp: HParams\):', 'def __init__(self, hp: HParams, device="cpu"):', text, count=1)
+    else:
         print("patch failed: enhancer/enhancer.py __init__ signature not found", file=sys.stderr)
         return False
-    if 'load_denoiser(self.hp.denoiser_run_dir, "cpu")' in text:
-        text = text.replace('load_denoiser(self.hp.denoiser_run_dir, "cpu")', "load_denoiser(self.hp.denoiser_run_dir, device)", 1)
-    elif "load_denoiser(self.hp.denoiser_run_dir, device)" not in text:
+    if 'load_denoiser(self.hp.denoiser_run_dir, device)' in text:
+        pass  # already patched
+    elif re.search(r'load_denoiser\(self\.hp\.denoiser_run_dir,\s*["\']cpu["\']\)', text):
+        text = re.sub(r'load_denoiser\(self\.hp\.denoiser_run_dir,\s*["\']cpu["\']\)', "load_denoiser(self.hp.denoiser_run_dir, device)", text, count=1)
+    else:
         print("patch failed: enhancer/enhancer.py load_denoiser(..., \"cpu\") not found", file=sys.stderr)
         return False
     path_enh.write_text(text)
@@ -274,9 +278,11 @@ def patch_enhancer_denoiser_device():
         print("patch failed: enhancer/inference.py not found", file=sys.stderr)
         return False
     text = path_inf.read_text()
-    if "Enhancer(hp)" in text and "Enhancer(hp, device=device)" not in text:
-        text = text.replace("Enhancer(hp)", "Enhancer(hp, device=device)", 1)
-    elif "Enhancer(hp, device=device)" not in text:
+    if "Enhancer(hp, device=device)" in text:
+        pass  # already patched
+    elif re.search(r'\bEnhancer\s*\(\s*hp\s*\)', text):
+        text = re.sub(r'\bEnhancer\s*\(\s*hp\s*\)', "Enhancer(hp, device=device)", text, count=1)
+    else:
         print("patch failed: enhancer/inference.py Enhancer(hp) not found", file=sys.stderr)
         return False
     path_inf.write_text(text)
@@ -309,32 +315,37 @@ def patch_inference_chunk_abs_max_device():
         print("patch failed: inference.py not found", file=sys.stderr)
         return False
     text = path.read_text()
-    # inference_chunk: move abs_max computation after dwav.to(device)
-    old_block = """ length = dwav.shape[-1]
- abs_max = dwav.abs().max().clamp(min=1e-7)
-
- assert dwav.dim() == 1, f"Expected 1D waveform, got {dwav.dim()}D"
- dwav = dwav.to(device)
- dwav = dwav / abs_max # Normalize"""
-    new_block = """ length = dwav.shape[-1]
- assert dwav.dim() == 1, f"Expected 1D waveform, got {dwav.dim()}D"
- dwav = dwav.to(device)
- abs_max = dwav.abs().max().clamp(min=1e-7)
- dwav = dwav / abs_max # Normalize"""
-    if new_block in text:
-        pass  # already patched
-    elif old_block in text:
-        text = text.replace(old_block, new_block, 1)
-    else:
-        # Try with different indentation (2 spaces)
-        old_alt = old_block.replace("\n ", "\n  ")
-        new_alt = new_block.replace("\n ", "\n  ")
-        if old_alt in text:
-            text = text.replace(old_alt, new_alt, 1)
-        else:
-            print("patch failed: inference.py inference_chunk block not found", file=sys.stderr)
-            return False
-    path.write_text(text)
+    # Already patched if abs_max comes after dwav.to(device)
+    if "dwav = dwav.to(device)\n abs_max = dwav.abs()" in text or "dwav = dwav.to(device)\n  abs_max = dwav.abs()" in text:
+        path.write_text(text)
+        print("Patched", path, ": inference_chunk abs_max on same device as dwav (already applied)")
+        return True
+    # Match block with flexible indentation (1 or 2 spaces; capture indent for replacement)
+    # Pattern: indent length = ... \n indent abs_max = ... \n \n indent assert ... \n indent dwav = ... \n indent dwav = ... / abs_max
+    old_pattern = re.compile(
+        r"^([ \t]+)length = dwav\.shape\[-1\]\n"
+        r"\1abs_max = dwav\.abs\(\)\.max\(\)\.clamp\(min=1e-7\)\n"
+        r"\n+"  # blank line(s) between abs_max and assert
+        r"\1assert dwav\.dim\(\) == 1, f\"Expected 1D waveform, got \{dwav\.dim\(\)\}D\"\n"
+        r"\1dwav = dwav\.to\(device\)\n"
+        r"\1dwav = dwav / abs_max( # Normalize)?",
+        re.MULTILINE,
+    )
+    def repl(m):
+        indent = m.group(1)
+        comment = m.group(2) or " # Normalize"
+        return (
+            f"{indent}length = dwav.shape[-1]\n"
+            f"{indent}assert dwav.dim() == 1, f\"Expected 1D waveform, got {{dwav.dim()}}D\"\n"
+            f"{indent}dwav = dwav.to(device)\n"
+            f"{indent}abs_max = dwav.abs().max().clamp(min=1e-7)\n"
+            f"{indent}dwav = dwav / abs_max{comment}"
+        )
+    new_text, n = old_pattern.subn(repl, text, count=1)
+    if n == 0:
+        print("patch failed: inference.py inference_chunk block not found", file=sys.stderr)
+        return False
+    path.write_text(new_text)
     print("Patched", path, ": inference_chunk abs_max on same device as dwav")
     return True
 
