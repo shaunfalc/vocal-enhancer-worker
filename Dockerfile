@@ -29,7 +29,7 @@ RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp
     && cp -r /tmp/resemble-enhance/config /app/ \
     && rm -rf /tmp/resemble-enhance \
     && python3 /app/patch_deepspeed_optional.py \
-    && python3 -c "from resemble_enhance.enhancer.inference import denoise, enhance"
+    && python3 -c "import sys; sys.path.insert(0, '/app'); from resemble_enhance.enhancer.inference import denoise, enhance; print('import OK')"
 
 COPY app.py .
 

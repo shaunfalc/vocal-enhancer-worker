@@ -76,37 +76,35 @@ from torch.distributed import broadcast_object_list"""
         return False
     text = text.replace(old_imports, new_imports, 1)
 
-    # Make init_distributed skip deepspeed when deepspeed is None
-    old_init = (
-        "def init_distributed():\n"
-        " fix_unset_envs()\n"
-        " deepspeed.init_distributed(get_accelerator().communication_backend_name())\n"
-        " torch.cuda.set_device(local_rank())"
+    # Make init_distributed skip deepspeed when deepspeed is None (accept any body indent: 1, 2, or 4 spaces)
+    init_distributed_re = re.compile(
+        r"(def init_distributed\(\):\n)"
+        r"([ \t]+)(fix_unset_envs\(\)\n)"
+        r"\2(deepspeed\.init_distributed\(get_accelerator\(\)\.communication_backend_name\(\)\)\n)"
+        r"\2(torch\.cuda\.set_device\(local_rank\(\)\))",
+        re.MULTILINE,
     )
-    new_init = """def init_distributed():
- fix_unset_envs()
- if deepspeed is not None:
-     deepspeed.init_distributed(get_accelerator().communication_backend_name())
-     torch.cuda.set_device(local_rank())"""
-    if old_init not in text:
-        # Try 4-space indent variant
-        old_init_4 = (
-            "def init_distributed():\n"
-            "    fix_unset_envs()\n"
-            "    deepspeed.init_distributed(get_accelerator().communication_backend_name())\n"
-            "    torch.cuda.set_device(local_rank())"
-        )
-        new_init_4 = """def init_distributed():
-    fix_unset_envs()
-    if deepspeed is not None:
-        deepspeed.init_distributed(get_accelerator().communication_backend_name())
-        torch.cuda.set_device(local_rank())"""
-        if old_init_4 not in text:
-            print("patch failed: distributed.py init_distributed block not found", file=sys.stderr)
-            return False
-        text = text.replace(old_init_4, new_init_4, 1)
-    else:
-        text = text.replace(old_init, new_init, 1)
+    match = init_distributed_re.search(text)
+    if not match:
+        print("patch failed: distributed.py init_distributed block not found", file=sys.stderr)
+        return False
+    indent = match.group(2)
+    inner = "    "  # 4 spaces for block under "if deepspeed is not None"
+    text = (
+        text[: match.start()]
+        + match.group(1)
+        + indent
+        + match.group(3)
+        + indent
+        + "if deepspeed is not None:\n"
+        + indent
+        + inner
+        + match.group(4)
+        + indent
+        + inner
+        + match.group(5)
+        + text[match.end() :]
+    )
 
     path.write_text(text)
     print("Patched", path, ": deepspeed optional, init_distributed no-op when missing")
@@ -145,36 +143,34 @@ from torch import nn"""
         return False
     text = text.replace(old_block, new_block, 1)
 
-    # Make init_distributed no-op when deepspeed is None
-    old_init = """@cache
-def init_distributed():
- update_deepspeed_logger()
- fix_unset_envs()
- deepspeed.init_distributed(get_accelerator().communication_backend_name())"""
-    new_init = """@cache
-def init_distributed():
- update_deepspeed_logger()
- fix_unset_envs()
- if deepspeed is not None:
-     deepspeed.init_distributed(get_accelerator().communication_backend_name())"""
-    if old_init not in text:
-        old_init_4 = """@cache
-def init_distributed():
-    update_deepspeed_logger()
-    fix_unset_envs()
-    deepspeed.init_distributed(get_accelerator().communication_backend_name())"""
-        new_init_4 = """@cache
-def init_distributed():
-    update_deepspeed_logger()
-    fix_unset_envs()
-    if deepspeed is not None:
-        deepspeed.init_distributed(get_accelerator().communication_backend_name())"""
-        if old_init_4 not in text:
-            print("patch failed: engine.py init_distributed block not found", file=sys.stderr)
-            return False
-        text = text.replace(old_init_4, new_init_4, 1)
-    else:
-        text = text.replace(old_init, new_init, 1)
+    # Make init_distributed no-op when deepspeed is None (accept any body indent)
+    init_distributed_re = re.compile(
+        r"(@cache\ndef init_distributed\(\):\n)"
+        r"([ \t]+)(update_deepspeed_logger\(\)\n)"
+        r"\2(fix_unset_envs\(\)\n)"
+        r"\2(deepspeed\.init_distributed\(get_accelerator\(\)\.communication_backend_name\(\)\))",
+        re.MULTILINE,
+    )
+    match = init_distributed_re.search(text)
+    if not match:
+        print("patch failed: engine.py init_distributed block not found", file=sys.stderr)
+        return False
+    indent = match.group(2)
+    inner = "    "
+    text = (
+        text[: match.start()]
+        + match.group(1)
+        + indent
+        + match.group(3)
+        + indent
+        + match.group(4)
+        + indent
+        + "if deepspeed is not None:\n"
+        + indent
+        + inner
+        + match.group(5)
+        + text[match.end() :]
+    )
 
     # Wrap class Engine(DeepSpeedEngine): ... in try/except so we can set Engine=None when deepspeed missing
     # We need to replace "class Engine(DeepSpeedEngine):" with conditional: only define class when deepspeed present
