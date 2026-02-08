@@ -1,5 +1,6 @@
 # Install after torch+torchaudio from CUDA index in Dockerfile (so we don't overwrite with CPU).
-# resemble-enhance is cloned from Git in Dockerfile (avoids deepspeed); add its runtime deps here.
+# resemble-enhance is cloned from Git in Dockerfile; patch_deepspeed_optional.py makes
+# deepspeed optional in enhancer/train.py so inference works without installing deepspeed.
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 supabase>=2.0.0

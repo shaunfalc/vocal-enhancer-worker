@@ -67,7 +67,9 @@ docker build -t vocal-enhancer-worker -f vocal-enhancer-worker/Dockerfile vocal-
 docker run --env-file vocal-enhancer-worker/.env -p 8000:8000 vocal-enhancer-worker
 ```
 
-If you see **"No module named 'deepspeed'"** in production, rebuild with `--no-cache` so the resemble-enhance patch is applied (e.g. `docker build --no-cache -t vocal-enhancer-worker .`), then redeploy.
+If you see **"No module named 'deepspeed'"**, do a clean rebuild so the patch is applied:  
+`docker build --no-cache -t vocal-enhancer-worker .` (from this directory) or from the monorepo root:  
+`docker build --no-cache -f vocal-enhancer-worker/Dockerfile -t vocal-enhancer-worker vocal-enhancer-worker`. Then redeploy.
 
 ## Redeploy after code changes (e.g. new dependency like tqdm)
 

@@ -21,15 +21,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-# Resemble Enhance: clone and copy package (no pip install — avoids build/deepspeed failures)
+# Resemble Enhance: clone and copy package, then patch train.py so deepspeed is optional (inference-only).
+# Patch is in same RUN as clone so cache never yields an unpatched tree.
+COPY patch_deepspeed_optional.py .
 RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp/resemble-enhance \
     && cp -r /tmp/resemble-enhance/resemble_enhance /app/ \
     && cp -r /tmp/resemble-enhance/config /app/ \
-    && rm -rf /tmp/resemble-enhance
-
-# Make deepspeed import optional so inference works without installing deepspeed (load_G/load_D unused)
-COPY patch_deepspeed_optional.py .
-RUN python3 patch_deepspeed_optional.py
+    && rm -rf /tmp/resemble-enhance \
+    && python3 /app/patch_deepspeed_optional.py
 
 COPY app.py .
 
