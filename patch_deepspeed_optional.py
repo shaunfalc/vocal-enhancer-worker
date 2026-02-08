@@ -350,6 +350,32 @@ def patch_inference_chunk_abs_max_device():
     return True
 
 
+def patch_inference_chunk_unnormalize_device():
+    """Use abs_max.cpu() when unnormalizing so hwav (on CPU after model(...).cpu()) matches device."""
+    path = base / "inference.py"
+    if not path.exists():
+        print("patch failed: inference.py not found", file=sys.stderr)
+        return False
+    text = path.read_text()
+    # hwav is on CPU (from model(...)[0].cpu()); abs_max is on device -> use abs_max.cpu()
+    if "hwav * abs_max.cpu()" in text:
+        print("Patched", path, ": inference_chunk unnormalize device (already applied)")
+        return True
+    if re.search(r"hwav = hwav \* abs_max(\s*\# Unnormalize)?", text):
+        text = re.sub(
+            r"hwav = hwav \* abs_max(\s*\# Unnormalize)?",
+            r"hwav = hwav * abs_max.cpu()\1",
+            text,
+            count=1,
+        )
+    else:
+        print("patch failed: inference.py hwav * abs_max unnormalize line not found", file=sys.stderr)
+        return False
+    path.write_text(text)
+    print("Patched", path, ": inference_chunk unnormalize uses abs_max.cpu()")
+    return True
+
+
 def patch_enhancer_inference_map_location():
     """Load enhancer state onto target device (regex so \"cpu\" or 'cpu' both match)."""
     path = base / "enhancer" / "inference.py"
@@ -381,6 +407,7 @@ def main():
         and patch_enhancer_denoiser_device()
         and patch_denoiser_inference_map_location()
         and patch_inference_chunk_abs_max_device()
+        and patch_inference_chunk_unnormalize_device()
     )
     if not ok:
         sys.exit(1)
