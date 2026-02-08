@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Make deepspeed import optional in resemble_enhance enhancer/train.py for inference-only worker."""
+import sys
 from pathlib import Path
 
 path = Path("/app/resemble_enhance/enhancer/train.py")
+if not path.exists():
+    print("patch failed: target file does not exist:", path, file=sys.stderr)
+    sys.exit(1)
 text = path.read_text()
 
 old = "from deepspeed import DeepSpeedConfig"

@@ -2,6 +2,7 @@
 VocalEnhancer worker: accepts enhancement jobs, runs Resemble Enhance, uploads to Supabase.
 Returns 202 Accepted immediately and processes in background (RunPod proxy 100s timeout).
 """
+import math
 import os
 import tempfile
 import threading
@@ -211,7 +212,7 @@ def _process_job(job_id: str, input_url: str) -> None:
             if jr.data:
                 fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
                 dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
-                dur_min = dur_sec / 60.0
+                dur_min = math.ceil(dur_sec / 60.0)
                 supabase.rpc("refund_usage_and_credit", {"p_user_id": jr.data["user_id"], "p_duration_minutes": dur_min}).execute()
         except Exception as rpc_err:
             logging.warning("refund_usage_and_credit failed, retrying once: job_id=%s err=%s", job_id, rpc_err)
@@ -220,7 +221,7 @@ def _process_job(job_id: str, input_url: str) -> None:
                 if jr.data:
                     fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
                     dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
-                    dur_min = dur_sec / 60.0
+                    dur_min = math.ceil(dur_sec / 60.0)
                     supabase.rpc("refund_usage_and_credit", {"p_user_id": jr.data["user_id"], "p_duration_minutes": dur_min}).execute()
             except Exception:
                 pass
