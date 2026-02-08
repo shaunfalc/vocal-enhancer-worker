@@ -1,0 +1,177 @@
+"""
+VocalEnhancer worker: accepts enhancement jobs, runs Resemble Enhance, uploads to Supabase.
+Returns 202 Accepted immediately and processes in background (RunPod proxy 100s timeout).
+"""
+import os
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+import httpx
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client, Client
+
+# Resemble Enhance (lazy import after torch to set device)
+_device = None
+
+def _get_device():
+    global _device
+    if _device is not None:
+        return _device
+    import torch
+    _device = "cuda" if torch.cuda.is_available() else "cpu"
+    return _device
+
+
+# ----- Config -----
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+WORKER_SECRET = os.environ.get("WORKER_SECRET") or os.environ.get("RUNPOD_API_KEY")
+
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+if not WORKER_SECRET:
+    raise RuntimeError("WORKER_SECRET or RUNPOD_API_KEY must be set")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+security = HTTPBearer(auto_error=False)
+
+
+def verify_bearer(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> None:
+    if not credentials or credentials.credentials != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ----- FastAPI app -----
+app = FastAPI(title="VocalEnhancer Worker", version="0.1.0")
+
+
+@app.get("/health")
+def health():
+    """Uptime/monitoring: returns 200 when worker is up."""
+    return {"status": "ok"}
+
+
+@app.post("/run", dependencies=[Depends(verify_bearer)])
+async def run(request: Request):
+    """
+    Accept enhancement job. Body: { "input": { "job_id": "<uuid>", "input_url": "<signed-url>" } }.
+    Returns 202 Accepted immediately; processing runs in background.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    inp = body.get("input") or body
+    job_id = inp.get("job_id")
+    input_url = inp.get("input_url")
+    if not job_id or not input_url:
+        raise HTTPException(status_code=400, detail="job_id and input_url required")
+
+    # Spawn background task and return immediately (stay under 100s proxy timeout)
+    thread = threading.Thread(target=_process_job, args=(job_id, input_url), daemon=True)
+    thread.start()
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={"status": "accepted", "job_id": job_id},
+        status_code=202,
+    )
+
+
+def _process_job(job_id: str, input_url: str) -> None:
+    start_time = time.time()
+    try:
+        # Idempotency: re-fetch job; if not processing, skip
+        r = supabase.table("jobs").select("id, user_id, file_id, status").eq("id", job_id).single().execute()
+        job = r.data
+        if not job or job.get("status") != "processing":
+            return
+
+        user_id = job["user_id"]
+        file_id = job["file_id"]
+
+        # Input file duration for usage
+        fr = supabase.table("files").select("duration_seconds").eq("id", file_id).single().execute()
+        duration_seconds = float(fr.data.get("duration_seconds", 0) or 0)
+        duration_minutes = duration_seconds / 60.0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.audio"
+            output_path = Path(tmpdir) / "output.wav"
+
+            # Download
+            with httpx.Client(timeout=300.0) as client:
+                resp = client.get(input_url)
+                resp.raise_for_status()
+                input_path.write_bytes(resp.content)
+
+            # Load with torchaudio (WAV/MP3)
+            import torch
+            import torchaudio
+            from resemble_enhance.enhancer.inference import denoise, enhance
+
+            dwav, sr = torchaudio.load(str(input_path))
+            dwav = dwav.mean(dim=0).unsqueeze(0)  # mono
+            device = _get_device()
+            dwav = dwav.to(device)
+
+            # Denoise then enhance (same as Resemble app.py: lambd=0.9 for denoising)
+            wav_denoised, sr_denoise = denoise(dwav, sr, device)
+            wav_out, new_sr = enhance(
+                wav_denoised, sr_denoise, device,
+                nfe=64, solver="midpoint", lambd=0.1, tau=0.5
+            )
+            wav_np = wav_out.cpu().numpy().squeeze()
+
+            # Write WAV
+            import scipy.io.wavfile as wavfile
+            wavfile.write(str(output_path), int(new_sr), wav_np)
+
+            # Upload to Supabase outputs
+            output_path_str = f"{user_id}/{job_id}.wav"
+            with open(output_path, "rb") as f:
+                supabase.storage.from_("outputs").upload(
+                    output_path_str,
+                    f.read(),
+                    file_options={"content-type": "audio/wav", "upsert": "true"}
+                )
+
+        # Insert output file row
+        out_file_r = supabase.table("files").insert({
+            "user_id": user_id,
+            "storage_path": output_path_str,
+            "bucket": "outputs",
+            "duration_seconds": duration_seconds,
+            "mime_type": "audio/wav",
+        }).select("id").execute()
+        output_file_id = out_file_r.data[0]["id"]
+
+        processing_seconds = time.time() - start_time
+        supabase.table("jobs").update({
+            "status": "completed",
+            "output_file_id": output_file_id,
+            "processing_seconds": round(processing_seconds, 2),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }).eq("id", job_id).execute()
+
+        # Deduct usage
+        supabase.rpc(
+            "record_usage_and_deduct_credit",
+            {"p_user_id": user_id, "p_duration_minutes": duration_minutes}
+        ).execute()
+
+    except Exception as e:
+        err_msg = str(e)[:500]
+        try:
+            supabase.table("jobs").update({
+                "status": "failed",
+                "error_message": err_msg,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }).eq("id", job_id).execute()
+        except Exception:
+            pass
+        raise

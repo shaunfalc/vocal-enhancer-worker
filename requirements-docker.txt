@@ -1,0 +1,7 @@
+# Install after torch+torchaudio from CUDA index in Dockerfile (so we don't overwrite with CPU)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+resemble-enhance>=0.1.0
+supabase>=2.0.0
+httpx>=0.25.0
+scipy>=1.11.0

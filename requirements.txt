@@ -1,0 +1,17 @@
+# HTTP server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Resemble Enhance (PyTorch + audio)
+torch>=2.0.0
+torchaudio>=2.0.0
+resemble-enhance>=0.1.0
+
+# Supabase
+supabase>=2.0.0
+
+# HTTP client for downloading
+httpx>=0.25.0
+
+# Optional: scipy for WAV write if needed (torchaudio can write WAV)
+scipy>=1.11.0
