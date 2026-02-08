@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Make deepspeed optional in resemble_enhance for inference-only worker.
 
-Patches five areas in the cloned repo:
+Patches the cloned repo in nine areas:
 - enhancer/train.py: optional DeepSpeedConfig
 - denoiser/train.py: optional DeepSpeedConfig (loaded when enhancer imports load_denoiser)
 - utils/distributed.py: optional deepspeed + stub get_accelerator, init_distributed no-op when missing
 - utils/engine.py: optional deepspeed, Engine=None and no-op init_distributed when missing
-- enhancer/inference.py: load model with map_location=device so no tensors stay on CPU (fixes cuda/cpu device mismatch)
+- enhancer/inference.py: load state with map_location=device (regex); Enhancer(hp) -> Enhancer(hp, device=device)
+- enhancer/enhancer.py: __init__(hp, device="cpu"), load_denoiser(..., device) instead of "cpu"
+- denoiser/inference.py: load_denoiser uses map_location=device
+- inference.py: inference_chunk computes abs_max after dwav.to(device) so normalize stays on same device
 """
 import re
 import sys
@@ -244,19 +247,111 @@ from torch import nn"""
     return True
 
 
+def patch_enhancer_denoiser_device():
+    """Make Enhancer pass device to load_denoiser and load_enhancer pass device to Enhancer."""
+    # 1. enhancer/enhancer.py: add device param to __init__, use it in load_denoiser
+    path_enh = base / "enhancer" / "enhancer.py"
+    if not path_enh.exists():
+        print("patch failed: enhancer/enhancer.py not found", file=sys.stderr)
+        return False
+    text = path_enh.read_text()
+    if 'def __init__(self, hp: HParams):' in text:
+        text = text.replace('def __init__(self, hp: HParams):', 'def __init__(self, hp: HParams, device="cpu"):', 1)
+    elif 'def __init__(self, hp: HParams, device="cpu"):' not in text:
+        print("patch failed: enhancer/enhancer.py __init__ signature not found", file=sys.stderr)
+        return False
+    if 'load_denoiser(self.hp.denoiser_run_dir, "cpu")' in text:
+        text = text.replace('load_denoiser(self.hp.denoiser_run_dir, "cpu")', "load_denoiser(self.hp.denoiser_run_dir, device)", 1)
+    elif "load_denoiser(self.hp.denoiser_run_dir, device)" not in text:
+        print("patch failed: enhancer/enhancer.py load_denoiser(..., \"cpu\") not found", file=sys.stderr)
+        return False
+    path_enh.write_text(text)
+    print("Patched", path_enh, ": Enhancer __init__ accepts device, passes to load_denoiser")
+
+    # 2. enhancer/inference.py: Enhancer(hp) -> Enhancer(hp, device=device)
+    path_inf = base / "enhancer" / "inference.py"
+    if not path_inf.exists():
+        print("patch failed: enhancer/inference.py not found", file=sys.stderr)
+        return False
+    text = path_inf.read_text()
+    if "Enhancer(hp)" in text and "Enhancer(hp, device=device)" not in text:
+        text = text.replace("Enhancer(hp)", "Enhancer(hp, device=device)", 1)
+    elif "Enhancer(hp, device=device)" not in text:
+        print("patch failed: enhancer/inference.py Enhancer(hp) not found", file=sys.stderr)
+        return False
+    path_inf.write_text(text)
+    print("Patched", path_inf, ": load_enhancer passes device to Enhancer")
+    return True
+
+
+def patch_denoiser_inference_map_location():
+    """Load denoiser state onto target device (map_location=device)."""
+    path = base / "denoiser" / "inference.py"
+    if not path.exists():
+        print("patch failed: denoiser/inference.py not found", file=sys.stderr)
+        return False
+    text = path.read_text()
+    # Support both "cpu" and 'cpu' for robustness
+    if re.search(r'map_location\s*=\s*["\']cpu["\']', text):
+        text = re.sub(r'map_location\s*=\s*["\']cpu["\']', "map_location=device", text, count=1)
+    else:
+        print("patch failed: denoiser/inference.py torch.load map_location not found", file=sys.stderr)
+        return False
+    path.write_text(text)
+    print("Patched", path, ": load_denoiser uses map_location=device")
+    return True
+
+
+def patch_inference_chunk_abs_max_device():
+    """Compute abs_max after dwav.to(device) so normalize uses same device."""
+    path = base / "inference.py"
+    if not path.exists():
+        print("patch failed: inference.py not found", file=sys.stderr)
+        return False
+    text = path.read_text()
+    # inference_chunk: move abs_max computation after dwav.to(device)
+    old_block = """ length = dwav.shape[-1]
+ abs_max = dwav.abs().max().clamp(min=1e-7)
+
+ assert dwav.dim() == 1, f"Expected 1D waveform, got {dwav.dim()}D"
+ dwav = dwav.to(device)
+ dwav = dwav / abs_max # Normalize"""
+    new_block = """ length = dwav.shape[-1]
+ assert dwav.dim() == 1, f"Expected 1D waveform, got {dwav.dim()}D"
+ dwav = dwav.to(device)
+ abs_max = dwav.abs().max().clamp(min=1e-7)
+ dwav = dwav / abs_max # Normalize"""
+    if new_block in text:
+        pass  # already patched
+    elif old_block in text:
+        text = text.replace(old_block, new_block, 1)
+    else:
+        # Try with different indentation (2 spaces)
+        old_alt = old_block.replace("\n ", "\n  ")
+        new_alt = new_block.replace("\n ", "\n  ")
+        if old_alt in text:
+            text = text.replace(old_alt, new_alt, 1)
+        else:
+            print("patch failed: inference.py inference_chunk block not found", file=sys.stderr)
+            return False
+    path.write_text(text)
+    print("Patched", path, ": inference_chunk abs_max on same device as dwav")
+    return True
+
+
 def patch_enhancer_inference_map_location():
-    """Load enhancer state onto target device to avoid cuda/cpu tensor mismatch."""
+    """Load enhancer state onto target device (regex so \"cpu\" or 'cpu' both match)."""
     path = base / "enhancer" / "inference.py"
     if not path.exists():
         print("patch failed: enhancer/inference.py not found", file=sys.stderr)
         return False
     text = path.read_text()
-    old = 'state_dict = torch.load(path, map_location="cpu")["module"]'
-    new = 'state_dict = torch.load(path, map_location=device)["module"]'
-    if old not in text:
-        print("patch failed: enhancer/inference.py expected torch.load line not found", file=sys.stderr)
+    # Replace map_location="cpu" or map_location='cpu' with map_location=device
+    if re.search(r'map_location\s*=\s*["\']cpu["\']', text):
+        text = re.sub(r'map_location\s*=\s*["\']cpu["\']', "map_location=device", text, count=1)
+    else:
+        print("patch failed: enhancer/inference.py expected torch.load map_location not found", file=sys.stderr)
         return False
-    text = text.replace(old, new, 1)
     path.write_text(text)
     print("Patched", path, ": load state with map_location=device")
     return True
@@ -272,6 +367,9 @@ def main():
         and patch_distributed_py()
         and patch_engine_py()
         and patch_enhancer_inference_map_location()
+        and patch_enhancer_denoiser_device()
+        and patch_denoiser_inference_map_location()
+        and patch_inference_chunk_abs_max_device()
     )
     if not ok:
         sys.exit(1)
