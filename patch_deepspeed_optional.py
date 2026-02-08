@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Make deepspeed optional in resemble_enhance for inference-only worker.
 
-Patches four files in the cloned repo:
+Patches five areas in the cloned repo:
 - enhancer/train.py: optional DeepSpeedConfig
 - denoiser/train.py: optional DeepSpeedConfig (loaded when enhancer imports load_denoiser)
 - utils/distributed.py: optional deepspeed + stub get_accelerator, init_distributed no-op when missing
 - utils/engine.py: optional deepspeed, Engine=None and no-op init_distributed when missing
+- enhancer/inference.py: load model with map_location=device so no tensors stay on CPU (fixes cuda/cpu device mismatch)
 """
 import re
 import sys
@@ -243,6 +244,24 @@ from torch import nn"""
     return True
 
 
+def patch_enhancer_inference_map_location():
+    """Load enhancer state onto target device to avoid cuda/cpu tensor mismatch."""
+    path = base / "enhancer" / "inference.py"
+    if not path.exists():
+        print("patch failed: enhancer/inference.py not found", file=sys.stderr)
+        return False
+    text = path.read_text()
+    old = 'state_dict = torch.load(path, map_location="cpu")["module"]'
+    new = 'state_dict = torch.load(path, map_location=device)["module"]'
+    if old not in text:
+        print("patch failed: enhancer/inference.py expected torch.load line not found", file=sys.stderr)
+        return False
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+    print("Patched", path, ": load state with map_location=device")
+    return True
+
+
 def main():
     if not base.exists():
         print("patch failed: resemble_enhance not found at", base, file=sys.stderr)
@@ -252,6 +271,7 @@ def main():
         and patch_denoiser_train_py()
         and patch_distributed_py()
         and patch_engine_py()
+        and patch_enhancer_inference_map_location()
     )
     if not ok:
         sys.exit(1)
