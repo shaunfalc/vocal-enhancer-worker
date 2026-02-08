@@ -28,7 +28,9 @@ def _get_device():
 # ----- Config -----
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+# Prefer WORKER_SECRET so RunPod-injected RUNPOD_API_KEY doesn't override your app key
 WORKER_SECRET = os.environ.get("WORKER_SECRET") or os.environ.get("RUNPOD_API_KEY")
+_WORKER_SECRET_SOURCE = "WORKER_SECRET" if os.environ.get("WORKER_SECRET") else "RUNPOD_API_KEY"
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
@@ -40,12 +42,40 @@ security = HTTPBearer(auto_error=False)
 
 
 def verify_bearer(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> None:
-    if not credentials or credentials.credentials != WORKER_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    import logging
+    logger = logging.getLogger("uvicorn")
+    
+    if not WORKER_SECRET:
+        logger.error("WORKER_SECRET or RUNPOD_API_KEY is not set in environment variables!")
+        raise HTTPException(status_code=500, detail="Worker configuration error")
+
+    if not credentials:
+        logger.warning("No credentials provided in Authorization header")
+        raise HTTPException(status_code=401, detail="Unauthorized - No credentials")
+
+    if credentials.credentials != WORKER_SECRET:
+        logger.warning(f"Token mismatch. Expected length: {len(WORKER_SECRET)}, Received length: {len(credentials.credentials)}")
+        # Optional: print first few chars for debugging (remove in production)
+        # logger.warning(f"Expected start: {WORKER_SECRET[:4]}..., Received start: {credentials.credentials[:4]}...")
+        raise HTTPException(status_code=401, detail="Unauthorized - Invalid token")
 
 
 # ----- FastAPI app -----
 app = FastAPI(title="VocalEnhancer Worker", version="0.1.0")
+
+
+@app.on_event("startup")
+def _log_auth_config() -> None:
+    """Log auth config at startup (no secret value) so you can verify from pod logs."""
+    import sys
+    msg = (
+        f"Worker auth: {_WORKER_SECRET_SOURCE} set, length={len(WORKER_SECRET)}. "
+        "App must send Authorization: Bearer <same value>. "
+        "If you get 401, set WORKER_SECRET on this pod to match ve-app RUNPOD_API_KEY."
+    )
+    print(msg, flush=True)
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
 
 
 @app.get("/health")

@@ -29,7 +29,7 @@ The app dispatcher (cron or immediate) sends jobs to this worker; users poll `GE
 |----------|----------|-------------|
 | `SUPABASE_URL` | Yes | Supabase project URL. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS). |
-| `WORKER_SECRET` or `RUNPOD_API_KEY` | Yes | Shared secret for `Authorization: Bearer`; set the same value in the app as `RUNPOD_API_KEY`. |
+| `WORKER_SECRET` (recommended) or `RUNPOD_API_KEY` | Yes | Shared secret for `Authorization: Bearer`. On RunPod, set **WORKER_SECRET** to the same value as `RUNPOD_API_KEY` in ve-app so RunPod-injected vars don't override it. |
 
 ## Run locally
 
@@ -71,12 +71,12 @@ docker run --env-file .env -p 8000:8000 vocal-enhancer-worker
    - **GPU**: e.g. RTX 4090, A40, or T4 (Resemble Enhance uses CUDA).
    - **Container image**: `your-registry/vocal-enhancer-worker:latest`.
    - **Expose HTTP Ports**: `8000` (so the worker is reachable at `https://<POD_ID>-8000.proxy.runpod.net`).
-   - **Environment variables**: Add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `RUNPOD_API_KEY` (or `WORKER_SECRET`) with your values.
+   - **Environment variables**: Add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and **`WORKER_SECRET`** (recommended). Set `WORKER_SECRET` to the **exact same value** as `RUNPOD_API_KEY` in your ve-app `.env.local`. Do not rely on `RUNPOD_API_KEY` on the pod—RunPod may inject a different value, which causes 401 Unauthorized.
    - Start command can stay default (image CMD runs uvicorn).
 3. **Note the Pod ID** from the RunPod console (e.g. `abc123xyz`) once the pod is running.
 4. **Configure the app (ve-app)**:
    - Set `RUNPOD_ENDPOINT_URL=https://<POD_ID>-8000.proxy.runpod.net/run` (replace `<POD_ID>`).
-   - Set `RUNPOD_API_KEY` to the same secret you set on the worker.
+   - Set `RUNPOD_API_KEY` to the same secret you set as `WORKER_SECRET` on the worker.
 
 After that, the app’s cron dispatch will send jobs to this worker; users poll `GET /api/jobs/:id` until completion.
 
