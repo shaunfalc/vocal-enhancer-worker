@@ -26,6 +26,10 @@ RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp
     && cp -r /tmp/resemble-enhance/config /app/ \
     && rm -rf /tmp/resemble-enhance
 
+# Make deepspeed import optional so inference works without installing deepspeed (load_G/load_D unused)
+COPY patch_deepspeed_optional.py .
+RUN python3 patch_deepspeed_optional.py
+
 COPY app.py .
 
 # Expose port for RunPod HTTP proxy (Expose HTTP Ports: 8000)

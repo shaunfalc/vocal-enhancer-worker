@@ -194,24 +194,8 @@ def _process_job(job_id: str, input_url: str) -> None:
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }).eq("id", job_id).execute()
 
-        # Deduct usage (retry once on failure to avoid completed-but-not-billed)
-        rpc_args = {"p_user_id": user_id, "p_duration_minutes": duration_minutes}
-
-        def _deduct() -> None:
-            supabase.rpc("record_usage_and_deduct_credit", rpc_args).execute()
-
-        try:
-            _deduct()
-        except Exception as rpc_err:
-            import logging
-            logging.warning(
-                "record_usage_and_deduct_credit failed, retrying once: job_id=%s err=%s",
-                job_id,
-                rpc_err,
-            )
-            _deduct()
-
     except Exception as e:
+        import logging
         err_msg = str(e)[:500]
         try:
             supabase.table("jobs").update({
@@ -221,4 +205,23 @@ def _process_job(job_id: str, input_url: str) -> None:
             }).eq("id", job_id).execute()
         except Exception:
             pass
+        # Refund credits (already deducted at dispatch)
+        try:
+            jr = supabase.table("jobs").select("user_id, file_id").eq("id", job_id).single().execute()
+            if jr.data:
+                fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
+                dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
+                dur_min = dur_sec / 60.0
+                supabase.rpc("refund_usage_and_credit", {"p_user_id": jr.data["user_id"], "p_duration_minutes": dur_min}).execute()
+        except Exception as rpc_err:
+            logging.warning("refund_usage_and_credit failed, retrying once: job_id=%s err=%s", job_id, rpc_err)
+            try:
+                jr = supabase.table("jobs").select("user_id, file_id").eq("id", job_id).single().execute()
+                if jr.data:
+                    fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
+                    dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
+                    dur_min = dur_sec / 60.0
+                    supabase.rpc("refund_usage_and_credit", {"p_user_id": jr.data["user_id"], "p_duration_minutes": dur_min}).execute()
+            except Exception:
+                pass
         raise
