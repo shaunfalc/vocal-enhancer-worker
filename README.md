@@ -44,6 +44,13 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 - Health: `GET http://localhost:8000/health`
 - Run: `POST http://localhost:8000/run` with JSON body and `Authorization: Bearer <RUNPOD_API_KEY>`.
 
+## CI/CD (GitHub Actions)
+
+A workflow builds and pushes the Docker image to **GitHub Container Registry** on every push to `main` and on releases. Image: `ghcr.io/shaunfalc/vocal-enhancer-worker:latest`.
+
+- **After the first successful run**: In GitHub go to the repo → **Packages** (right sidebar), open **vocal-enhancer-worker**, then **Package settings** → set **Visibility** to **Public** so RunPod can pull without credentials.
+- For RunPod, use container image: `ghcr.io/shaunfalc/vocal-enhancer-worker:latest`.
+
 ## Docker (for RunPod)
 
 Build from repo root (no wrapper directory):
