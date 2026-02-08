@@ -159,6 +159,7 @@ def _process_job(job_id: str, input_url: str) -> None:
             # Denoise then enhance; Resemble Enhance expects 1D waveform
             wav_denoised, sr_denoise = denoise(dwav, sr, device)
             wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
+            wav_denoised = wav_denoised.to(device)  # ensure same device as enhance model
             wav_out, new_sr = enhance(
                 wav_denoised, sr_denoise, device,
                 nfe=64, solver="midpoint", lambd=0.1, tau=0.5
