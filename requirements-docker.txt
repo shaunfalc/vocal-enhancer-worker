@@ -1,5 +1,5 @@
 # Install after torch+torchaudio from CUDA index in Dockerfile (so we don't overwrite with CPU).
-# resemble-enhance is installed from Git with --no-deps in Dockerfile (avoids deepspeed build failure).
+# resemble-enhance is cloned from Git in Dockerfile (avoids deepspeed); add its runtime deps here.
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 supabase>=2.0.0
@@ -9,3 +9,4 @@ omegaconf>=2.3.0
 soundfile>=0.12.1
 numpy>=1.26.2
 tqdm>=4.65.0
+librosa>=0.10.0
