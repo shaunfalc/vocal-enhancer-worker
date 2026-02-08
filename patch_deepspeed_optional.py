@@ -103,6 +103,7 @@ from torch.distributed import broadcast_object_list"""
         + indent
         + inner
         + match.group(5)
+        + "\n"
         + text[match.end() :]
     )
 

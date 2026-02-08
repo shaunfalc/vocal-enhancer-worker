@@ -28,8 +28,11 @@ RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp
     && cp -r /tmp/resemble-enhance/resemble_enhance /app/ \
     && cp -r /tmp/resemble-enhance/config /app/ \
     && rm -rf /tmp/resemble-enhance \
-    && python3 /app/patch_deepspeed_optional.py \
-    && python3 -c "import sys; sys.path.insert(0, '/app'); from resemble_enhance.enhancer.inference import denoise, enhance; print('import OK')"
+    && python3 /app/patch_deepspeed_optional.py
+
+# Verify the patched import chain (no deepspeed required). This is the path that used to fail.
+ENV PYTHONPATH=/app
+RUN python3 -c "from resemble_enhance.enhancer.train import Enhancer, HParams; print('import OK')"
 
 COPY app.py .
 
