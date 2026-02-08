@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
+# Resemble Enhance from Git with --no-deps to avoid deepspeed (training-only) which fails in Docker
+RUN pip install --no-cache-dir "git+https://github.com/resemble-ai/resemble-enhance.git@main" --no-deps
+
 COPY app.py .
 
 # Expose port for RunPod HTTP proxy (Expose HTTP Ports: 8000)
