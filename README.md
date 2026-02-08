@@ -53,12 +53,34 @@ A workflow builds and pushes the Docker image to **GitHub Container Registry** o
 
 ## Docker (for RunPod)
 
-Build from repo root (no wrapper directory):
+**If this worker is its own Git repo** (root = this folder):
 
 ```bash
 docker build -t vocal-enhancer-worker .
 docker run --env-file .env -p 8000:8000 vocal-enhancer-worker
 ```
+
+**If this worker lives inside a monorepo** (e.g. `Vocal Enhancer/vocal-enhancer-worker`), from the **monorepo root**:
+
+```bash
+docker build -t vocal-enhancer-worker -f vocal-enhancer-worker/Dockerfile vocal-enhancer-worker
+docker run --env-file vocal-enhancer-worker/.env -p 8000:8000 vocal-enhancer-worker
+```
+
+## Redeploy after code changes (e.g. new dependency like tqdm)
+
+**Option A — Use CI/CD (easiest)**  
+1. Commit and push your changes to the branch that triggers the workflow (e.g. `main`).
+2. Wait for the GitHub Actions workflow to build and push the image to `ghcr.io/shaunfalc/vocal-enhancer-worker:latest`.
+3. In **RunPod Console** → your pod → **Restart** (or stop and start). The pod will pull the new image on start.
+
+**Option B — Build and push manually**  
+1. Build the image (from monorepo root, or from this directory if this is the repo root — see Docker section above).
+2. Tag for your registry, e.g. Docker Hub:  
+   `docker tag vocal-enhancer-worker YOUR_DOCKERHUB_USER/vocal-enhancer-worker:latest`
+3. Push:  
+   `docker push YOUR_DOCKERHUB_USER/vocal-enhancer-worker:latest`
+4. In RunPod, if your pod uses a custom image URL, restart the pod so it pulls the new tag. If RunPod is set to `ghcr.io/shaunfalc/vocal-enhancer-worker:latest`, use Option A instead.
 
 ## RunPod always-on pod setup
 

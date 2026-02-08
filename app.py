@@ -78,6 +78,12 @@ def _log_auth_config() -> None:
     sys.stderr.flush()
 
 
+@app.get("/")
+def root():
+    """Root endpoint for load balancer/proxy probes; use GET /health for monitoring."""
+    return {"service": "VocalEnhancer Worker", "health": "/health", "run": "POST /run"}
+
+
 @app.get("/health")
 def health():
     """Uptime/monitoring: returns 200 when worker is up."""
