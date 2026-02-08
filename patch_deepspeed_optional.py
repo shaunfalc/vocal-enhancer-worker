@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Make deepspeed optional in resemble_enhance for inference-only worker.
 
-Patches three files in the cloned repo:
+Patches four files in the cloned repo:
 - enhancer/train.py: optional DeepSpeedConfig
+- denoiser/train.py: optional DeepSpeedConfig (loaded when enhancer imports load_denoiser)
 - utils/distributed.py: optional deepspeed + stub get_accelerator, init_distributed no-op when missing
 - utils/engine.py: optional deepspeed, Engine=None and no-op init_distributed when missing
 """
@@ -20,6 +21,14 @@ base = root / "resemble_enhance"
 def patch_train_py():
     """Make DeepSpeedConfig import optional in enhancer/train.py."""
     path = base / "enhancer" / "train.py"
+    if not _patch_deepspeed_import_in(path):
+        return False
+    print("Patched", path, ": deepspeed import optional")
+    return True
+
+
+def _patch_deepspeed_import_in(path):
+    """Make 'from deepspeed import DeepSpeedConfig' optional in the given file."""
     if not path.exists():
         print("patch failed: target file does not exist:", path, file=sys.stderr)
         return False
@@ -42,6 +51,14 @@ except ModuleNotFoundError:
     path.write_text(text)
     if "ModuleNotFoundError" not in path.read_text():
         print("patch verify failed:", path, file=sys.stderr)
+        return False
+    return True
+
+
+def patch_denoiser_train_py():
+    """Make DeepSpeedConfig import optional in denoiser/train.py (loaded via enhancer -> load_denoiser)."""
+    path = base / "denoiser" / "train.py"
+    if not _patch_deepspeed_import_in(path):
         return False
     print("Patched", path, ": deepspeed import optional")
     return True
@@ -230,7 +247,12 @@ def main():
     if not base.exists():
         print("patch failed: resemble_enhance not found at", base, file=sys.stderr)
         sys.exit(1)
-    ok = patch_train_py() and patch_distributed_py() and patch_engine_py()
+    ok = (
+        patch_train_py()
+        and patch_denoiser_train_py()
+        and patch_distributed_py()
+        and patch_engine_py()
+    )
     if not ok:
         sys.exit(1)
     print("All patches applied.")

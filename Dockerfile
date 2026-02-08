@@ -30,9 +30,10 @@ RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp
     && rm -rf /tmp/resemble-enhance \
     && python3 /app/patch_deepspeed_optional.py
 
-# Verify the patched import chain (no deepspeed required). This is the path that used to fail.
+# Verify the patched import chain (no deepspeed required). Print full traceback on failure.
 ENV PYTHONPATH=/app
-RUN python3 -c "from resemble_enhance.enhancer.train import Enhancer, HParams; print('import OK')"
+COPY check_import.py .
+RUN python3 check_import.py
 
 COPY app.py .
 
