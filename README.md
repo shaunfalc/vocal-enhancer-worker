@@ -71,6 +71,8 @@ If you see **"No module named 'deepspeed'"**, do a clean rebuild so the patch is
 `docker build --no-cache -t vocal-enhancer-worker .` (from this directory) or from the monorepo root:  
 `docker build --no-cache -f vocal-enhancer-worker/Dockerfile -t vocal-enhancer-worker vocal-enhancer-worker`. Then redeploy.
 
+The patch makes deepspeed optional for inference by editing the cloned Resemble Enhance tree in three places: **utils/distributed.py**, **utils/engine.py**, and **enhancer/train.py**. The frontend does not call deepspeed; it only calls this worker's HTTP API. The import chain is: app → enhancer.inference → enhancer.train → utils (distributed + engine); both utils files are patched so the worker runs without installing deepspeed.
+
 ## Redeploy after code changes (e.g. new dependency like tqdm)
 
 **Option A — Use CI/CD (easiest)**  
