@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-pip python3.10-venv \
-    libsndfile1 ffmpeg \
+    libsndfile1 ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -20,8 +20,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-# Resemble Enhance from Git with --no-deps to avoid deepspeed (training-only) which fails in Docker
-RUN pip install --no-cache-dir "git+https://github.com/resemble-ai/resemble-enhance.git@main" --no-deps
+# Resemble Enhance: clone and copy package (no pip install — avoids build/deepspeed failures)
+RUN git clone --depth 1 https://github.com/resemble-ai/resemble-enhance.git /tmp/resemble-enhance \
+    && cp -r /tmp/resemble-enhance/resemble_enhance /app/ \
+    && cp -r /tmp/resemble-enhance/config /app/ \
+    && rm -rf /tmp/resemble-enhance
 
 COPY app.py .
 
