@@ -379,7 +379,8 @@ def patch_inference_chunk_unnormalize_device():
 
 
 def patch_enhancer_inference_map_location():
-    """Load enhancer state onto target device (regex so \"cpu\" or 'cpu' both match)."""
+    """Load enhancer state onto target device (regex so \"cpu\" or 'cpu' both match).
+    Also allow builtins.set in weights_only load (checkpoint uses it)."""
     path = base / "enhancer" / "inference.py"
     if not path.exists():
         print("patch failed: enhancer/inference.py not found", file=sys.stderr)
@@ -393,8 +394,21 @@ def patch_enhancer_inference_map_location():
         return False
     if "weights_only=True" not in text:
         text = re.sub(r'map_location=device\)', "map_location=device, weights_only=True)", text, count=1)
+    # Allow builtins.set so weights_only=True works with resemble-enhance checkpoints
+    if "add_safe_globals" not in text:
+        # Insert before the line containing state_dict = torch.load(...)
+        text = re.sub(
+            r"^(\s+)(state_dict = torch\.load\()",
+            r"\1torch.serialization.add_safe_globals([set])\n\1\2",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if "add_safe_globals" not in text:
+            print("patch failed: enhancer/inference.py state_dict = torch.load line not found", file=sys.stderr)
+            return False
     path.write_text(text)
-    print("Patched", path, ": load state with map_location=device, weights_only=True")
+    print("Patched", path, ": load state with map_location=device, weights_only=True, add_safe_globals([set])")
     return True
 
 
