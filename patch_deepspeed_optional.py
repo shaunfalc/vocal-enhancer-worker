@@ -6,9 +6,9 @@ Patches the cloned repo in nine areas:
 - denoiser/train.py: optional DeepSpeedConfig (loaded when enhancer imports load_denoiser)
 - utils/distributed.py: optional deepspeed + stub get_accelerator, init_distributed no-op when missing
 - utils/engine.py: optional deepspeed, Engine=None and no-op init_distributed when missing
-- enhancer/inference.py: load state with map_location=device (regex); Enhancer(hp) -> Enhancer(hp, device=device)
+- enhancer/inference.py: load state with map_location=device, weights_only=True; Enhancer(hp) -> Enhancer(hp, device=device)
 - enhancer/enhancer.py: __init__(hp, device="cpu"), load_denoiser(..., device) instead of "cpu"
-- denoiser/inference.py: load_denoiser uses map_location=device
+- denoiser/inference.py: load_denoiser uses map_location=device, weights_only=True
 - inference.py: inference_chunk computes abs_max after dwav.to(device) so normalize stays on same device
 """
 import re
@@ -303,8 +303,10 @@ def patch_denoiser_inference_map_location():
     else:
         print("patch failed: denoiser/inference.py torch.load map_location not found", file=sys.stderr)
         return False
+    if "weights_only=True" not in text:
+        text = re.sub(r'map_location=device\)', "map_location=device, weights_only=True)", text, count=1)
     path.write_text(text)
-    print("Patched", path, ": load_denoiser uses map_location=device")
+    print("Patched", path, ": load_denoiser uses map_location=device, weights_only=True")
     return True
 
 
@@ -389,8 +391,10 @@ def patch_enhancer_inference_map_location():
     else:
         print("patch failed: enhancer/inference.py expected torch.load map_location not found", file=sys.stderr)
         return False
+    if "weights_only=True" not in text:
+        text = re.sub(r'map_location=device\)', "map_location=device, weights_only=True)", text, count=1)
     path.write_text(text)
-    print("Patched", path, ": load state with map_location=device")
+    print("Patched", path, ": load state with map_location=device, weights_only=True")
     return True
 
 
