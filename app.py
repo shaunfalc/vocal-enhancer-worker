@@ -179,14 +179,14 @@ def _process_job(job_id: str, input_url: str) -> None:
                     file_options={"content-type": "audio/wav", "upsert": "true"}
                 )
 
-        # Insert output file row
+        # Insert output file row (insert returns full row by default, including id)
         out_file_r = supabase.table("files").insert({
             "user_id": user_id,
             "storage_path": output_path_str,
             "bucket": "outputs",
             "duration_seconds": duration_seconds,
             "mime_type": "audio/wav",
-        }).select("id").execute()
+        }).execute()
         output_file_id = out_file_r.data[0]["id"]
 
         processing_seconds = time.time() - start_time
