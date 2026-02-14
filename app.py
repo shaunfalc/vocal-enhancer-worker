@@ -136,15 +136,33 @@ def _process_job(job_id: str, input_url: str) -> None:
         duration_seconds = float(fr.data.get("duration_seconds", 0) or 0)
         duration_minutes = duration_seconds / 60.0
 
+        MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.audio"
             output_path = Path(tmpdir) / "output.wav"
 
-            # Download
+            # Download with size limit
             with httpx.Client(timeout=300.0) as client:
-                resp = client.get(input_url)
-                resp.raise_for_status()
-                input_path.write_bytes(resp.content)
+                # HEAD request to check Content-Length first
+                try:
+                    head_resp = client.head(input_url)
+                    content_length = head_resp.headers.get("content-length")
+                    if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError(f"File too large ({int(content_length)} bytes). Maximum is 500 MB.")
+                except httpx.HTTPError:
+                    pass  # HEAD failed, proceed with streaming download
+
+                # Stream download with size guard
+                downloaded = 0
+                with client.stream("GET", input_url) as resp:
+                    resp.raise_for_status()
+                    with open(input_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            downloaded += len(chunk)
+                            if downloaded > MAX_DOWNLOAD_BYTES:
+                                raise RuntimeError(f"File exceeds 500 MB limit (downloaded {downloaded} bytes). Aborting.")
+                            f.write(chunk)
 
             # Load with torchaudio (WAV/MP3)
             import torch
