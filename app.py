@@ -109,7 +109,7 @@ async def run(request: Request):
         raise HTTPException(status_code=400, detail="job_id and input_url required")
 
     # Spawn background task and return immediately (stay under 100s proxy timeout)
-    thread = threading.Thread(target=_process_job, args=(job_id, input_url), daemon=True)
+    thread = threading.Thread(target=_process_job_with_timeout, args=(job_id, input_url), daemon=True)
     thread.start()
 
     from fastapi.responses import JSONResponse
@@ -117,6 +117,37 @@ async def run(request: Request):
         content={"status": "accepted", "job_id": job_id},
         status_code=202,
     )
+
+
+PROCESSING_TIMEOUT_SECONDS = 600  # 10 minutes
+
+
+def _process_job_with_timeout(job_id: str, input_url: str) -> None:
+    """Wrapper that enforces a 10-minute timeout on job processing."""
+    worker_thread = threading.Thread(target=_process_job, args=(job_id, input_url), daemon=True)
+    worker_thread.start()
+    worker_thread.join(timeout=PROCESSING_TIMEOUT_SECONDS)
+    if worker_thread.is_alive():
+        import logging
+        logging.error("Job %s exceeded %ds timeout, marking as failed", job_id, PROCESSING_TIMEOUT_SECONDS)
+        try:
+            supabase.table("jobs").update({
+                "status": "failed",
+                "error_message": f"Processing timed out after {PROCESSING_TIMEOUT_SECONDS // 60} minutes.",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }).eq("id", job_id).execute()
+        except Exception:
+            pass
+        # Refund credits
+        try:
+            jr = supabase.table("jobs").select("user_id, file_id").eq("id", job_id).single().execute()
+            if jr.data:
+                fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
+                dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
+                dur_min = math.ceil(dur_sec / 60.0)
+                supabase.rpc("refund_usage_and_credit", {"p_user_id": jr.data["user_id"], "p_duration_minutes": dur_min}).execute()
+        except Exception:
+            pass
 
 
 def _process_job(job_id: str, input_url: str) -> None:
