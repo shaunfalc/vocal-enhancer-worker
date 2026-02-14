@@ -119,7 +119,7 @@ async def run(request: Request):
     )
 
 
-PROCESSING_TIMEOUT_SECONDS = 600  # 10 minutes
+PROCESSING_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
 def _process_job_with_timeout(job_id: str, input_url: str) -> None:

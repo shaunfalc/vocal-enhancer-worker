@@ -5,7 +5,11 @@ uvicorn[standard]>=0.24.0
 # Resemble Enhance (PyTorch + audio)
 torch>=2.0.0
 torchaudio>=2.0.0
-resemble-enhance>=0.1.0
+# NOTE: resemble-enhance is NOT installed from PyPI. The Dockerfile clones it
+# from https://github.com/resemble-ai/resemble-enhance.git and copies the
+# package directly, then patches out the deepspeed dependency.
+# See Dockerfile and patch_deepspeed_optional.py for details.
+# resemble-enhance>=0.1.0
 
 # Supabase
 supabase>=2.0.0
