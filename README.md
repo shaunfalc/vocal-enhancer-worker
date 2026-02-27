@@ -1,6 +1,22 @@
 # VocalEnhancer Worker
 
-Python worker for VocalEnhancer: accepts enhancement jobs, runs [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (denoise + enhance), and uploads results to Supabase. Designed to run on an **always-on RunPod dedicated pod** with GPU.
+Python worker for VocalEnhancer: accepts enhancement jobs, runs [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance) (denoise + enhance), and uploads results to Supabase. Runs as a **RunPod Serverless** worker — pay per second of GPU usage, scales to zero between jobs.
+
+## RunPod Serverless Setup
+
+1. **Push the Docker image** — GitHub Actions CI builds and pushes to GHCR on every push to `main`
+2. **Create a Serverless Endpoint** at [runpod.io → Serverless → + New Endpoint](https://www.runpod.io/console/serverless)
+   - Container image: `ghcr.io/shaunfalc/vocal-enhancer-worker:latest`
+   - GPU: RTX 3080 or better (16GB+ VRAM recommended)
+   - Max workers: start with 3
+   - Idle timeout: 5 seconds (scales to zero fast)
+3. **Set environment variables** on the endpoint:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+4. **(Recommended) Mount a Network Volume** at `/runpod-volume` and set `TORCH_HOME=/runpod-volume/torch_cache` — this caches model weights so cold starts take ~30s instead of several minutes
+5. **Update ve-app env vars** (Vercel dashboard → vocal-labs/ve-app → Settings → Environment Variables):
+   - `RUNPOD_ENDPOINT_URL` = `https://api.runpod.ai/v2/<your-endpoint-id>/run`
+   - `RUNPOD_API_KEY` = your RunPod API key (runpod.io → Settings → API Keys)
 
 ## Push to GitHub
 
