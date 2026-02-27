@@ -1,6 +1,14 @@
-# VocalEnhancer worker: Resemble Enhance on RunPod (always-on pod).
+# VocalEnhancer worker: Resemble Enhance on RunPod Serverless.
 # Build from repo root: docker build -t vocal-enhancer-worker .
 # Use 12.1.1 (supported); 12.1.0 is deprecated per NVIDIA container support policy.
+#
+# RunPod Serverless setup:
+#   1. Push image to GHCR (GitHub Actions CI handles this)
+#   2. Create a Serverless Endpoint in RunPod dashboard, point to this image
+#   3. Set env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#   4. (Optional) Mount a network volume at /runpod-volume and set TORCH_HOME=/runpod-volume/torch_cache
+#      so model weights persist across cold starts
+#   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,9 +44,7 @@ COPY check_import.py .
 RUN python3 check_import.py
 
 COPY app.py .
+COPY handler.py .
 
-# Expose port for RunPod HTTP proxy (Expose HTTP Ports: 8000)
-EXPOSE 8000
-
-# Bind all interfaces so RunPod proxy can reach us
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# RunPod serverless: no port needed — handler.py is the entrypoint
+CMD ["python3", "-u", "handler.py"]
