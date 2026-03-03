@@ -1,6 +1,8 @@
 # VocalEnhancer worker: Resemble Enhance on RunPod Serverless.
 # Build from repo root: docker build -t vocal-enhancer-worker .
-# Use 12.1.1 (supported); 12.1.0 is deprecated per NVIDIA container support policy.
+#
+# Uses RunPod's official PyTorch base image (cuda12.1.1) — pre-tested on their GPU fleet.
+# This avoids "no kernel image available" CUDA errors that occur with the generic nvidia/cuda base.
 #
 # RunPod Serverless setup:
 #   1. Push image to GHCR (GitHub Actions CI handles this)
@@ -9,21 +11,20 @@
 #   4. (Optional) Mount a network volume at /runpod-volume and set TORCH_HOME=/runpod-volume/torch_cache
 #      so model weights persist across cold starts
 #   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3-pip python3.10-venv \
     libsndfile1 ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install PyTorch with CUDA first (match CUDA 12.1 in base)
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# PyTorch + torchaudio already included in the RunPod base image.
+# Upgrade pip only.
+RUN pip install --no-cache-dir --upgrade pip
 
 # Copy and install remaining deps (don't reinstall torch — use requirements-docker.txt)
 COPY requirements-docker.txt .
