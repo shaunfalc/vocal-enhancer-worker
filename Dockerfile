@@ -1,8 +1,8 @@
 # VocalEnhancer worker: Resemble Enhance on RunPod Serverless.
 # Build from repo root: docker build -t vocal-enhancer-worker .
 #
-# Uses RunPod's official PyTorch 2.2 base (cuda12.1.1) — proven GPU compat across RTX 3090/4090/A5000.
-# patch_deepspeed_optional.py uses weights_only=False so add_safe_globals (torch 2.4+ only) is not needed.
+# Uses RunPod's official PyTorch 2.4 base (cuda12.4.1) — covers Ada Lovelace (RTX 4090, ADA_32_PRO) + RTX 3090/A5000.
+# Fixes CUDA kernel mismatch error on Ada Lovelace GPUs (sm_89) that affected cuda12.1.1 builds.
 #
 # RunPod Serverless setup:
 #   1. Push image to GHCR (GitHub Actions CI handles this)
@@ -13,7 +13,7 @@
 #   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
 # Original proven base — broad GPU support (sm_35–sm_90), no CUDA kernel compat issues.
 # weights_only=False patch removes the need for add_safe_globals (torch 2.4+ only).
-FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
