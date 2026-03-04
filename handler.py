@@ -139,8 +139,18 @@ def _process_job(job_id: str, input_url: str) -> dict:
         if wav_np.ndim == 0:
             wav_np = wav_np.reshape(1)
 
+        import numpy as np
         import scipy.io.wavfile as wavfile
-        wavfile.write(str(output_path), int(new_sr), wav_np)
+
+        # Defensive: ensure wav_np is at least 1-D (squeeze can collapse to 0-dim)
+        wav_np = np.atleast_1d(wav_np)
+
+        # Defensive: ensure sample rate is a plain Python int
+        # (Resemble Enhance may return sr as a numpy scalar or tensor)
+        sr_out = int(float(new_sr)) if hasattr(new_sr, '__float__') else int(new_sr)
+
+        print(f"[handler] wav shape={wav_np.shape} dtype={wav_np.dtype} sr={sr_out}", flush=True)
+        wavfile.write(str(output_path), sr_out, wav_np)
 
         output_path_str = f"{user_id}/{job_id}.wav"
         with open(output_path, "rb") as f:
@@ -194,8 +204,10 @@ def handler(job: dict) -> dict:
         print(f"[handler] Job {job_id} complete: {result}", flush=True)
         return result
     except Exception as e:
+        import traceback
         err_msg = str(e)[:500]
         print(f"[handler] Job {job_id} failed: {err_msg}", flush=True)
+        print(f"[handler] Traceback:\n{traceback.format_exc()}", flush=True)
 
         # Update Supabase job status to failed
         try:
