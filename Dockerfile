@@ -1,9 +1,8 @@
 # VocalEnhancer worker: Resemble Enhance on RunPod Serverless.
 # Build from repo root: docker build -t vocal-enhancer-worker .
 #
-# Uses RunPod's official PyTorch base image (cuda12.4.1 + PyTorch 2.4) — pre-tested on their GPU fleet.
-# PyTorch 2.4+ required for torch.serialization.add_safe_globals (used by Resemble Enhance).
-# This avoids "no kernel image available" CUDA errors that occur with the generic nvidia/cuda base.
+# Uses RunPod's official PyTorch 2.2 base (cuda12.1.1) — proven GPU compat across RTX 3090/4090/A5000.
+# patch_deepspeed_optional.py uses weights_only=False so add_safe_globals (torch 2.4+ only) is not needed.
 #
 # RunPod Serverless setup:
 #   1. Push image to GHCR (GitHub Actions CI handles this)
@@ -12,14 +11,9 @@
 #   4. (Optional) Mount a network volume at /runpod-volume and set TORCH_HOME=/runpod-volume/torch_cache
 #      so model weights persist across cold starts
 #   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
-# cuda12.1.1 base has broad GPU support (sm_35 through sm_90) — avoids "no kernel image" errors on RTX 3090/4090.
-# PyTorch 2.4.0 is installed via pip to get torch.serialization.add_safe_globals (required by Resemble Enhance).
+# Original proven base — broad GPU support (sm_35–sm_90), no CUDA kernel compat issues.
+# weights_only=False patch removes the need for add_safe_globals (torch 2.4+ only).
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
-
-# Upgrade PyTorch to 2.4.0 (CUDA 12.1 wheels) — keeps add_safe_globals, keeps GPU compat
-RUN pip install --no-cache-dir --upgrade \
-    torch==2.4.0+cu121 torchaudio==2.4.0+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
