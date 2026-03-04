@@ -206,7 +206,7 @@ def handler(job: dict) -> dict:
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        err_msg = f"{str(e)} ||| TRACE: {tb}"[:1000]
+        err_msg = f"{str(e)} ||| TRACE: {tb}"[:3000]
         print(f"[handler] Job {job_id} failed: {str(e)}", flush=True)
         print(f"[handler] Traceback:\n{tb}", flush=True)
 
