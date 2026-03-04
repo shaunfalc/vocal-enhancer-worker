@@ -116,42 +116,41 @@ def _process_job(job_id: str, input_url: str) -> dict:
 
         import torch
         import torchaudio
+        import numpy as np
+        import scipy.io.wavfile as wavfile
         from resemble_enhance.enhancer.inference import denoise, enhance
 
+        print("[step 1] torchaudio.load", flush=True)
         dwav, sr = torchaudio.load(str(input_path))
+        print(f"[step 1] dwav shape={dwav.shape} dtype={dwav.dtype} sr={sr} sr_type={type(sr)}", flush=True)
+
+        print("[step 2] mean+device", flush=True)
         dwav = dwav.mean(dim=0)
         device = _get_device()
         dwav = dwav.to(device)
 
+        print("[step 3] denoise", flush=True)
         wav_denoised, sr_denoise = denoise(dwav, sr, device)
+        print(f"[step 3] wav_denoised shape={wav_denoised.shape} sr_denoise={sr_denoise} type={type(sr_denoise)}", flush=True)
         wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
         wav_denoised = wav_denoised.to(device)
+
+        print("[step 4] enhance", flush=True)
         wav_out, new_sr = enhance(
             wav_denoised, sr_denoise, device,
             nfe=64, solver="midpoint", lambd=0.1, tau=0.5
         )
-        # Ensure wav_out is at least 1-D before converting to numpy
-        # (Resemble Enhance can return a 0-dim scalar for very short/silent audio)
+        print(f"[step 4] wav_out shape={wav_out.shape} dtype={wav_out.dtype} new_sr={new_sr} type={type(new_sr)}", flush=True)
+
+        print("[step 5] tensor→numpy", flush=True)
         wav_out = wav_out.cpu()
-        if wav_out.dim() == 0:
-            wav_out = wav_out.unsqueeze(0)
-        wav_np = wav_out.numpy().squeeze()
-        if wav_np.ndim == 0:
-            wav_np = wav_np.reshape(1)
-
-        import numpy as np
-        import scipy.io.wavfile as wavfile
-
-        # Defensive: ensure wav_np is at least 1-D (squeeze can collapse to 0-dim)
-        wav_np = np.atleast_1d(wav_np)
-
-        # Defensive: ensure sample rate is a plain Python int.
-        # Resemble Enhance may return sr as a numpy scalar, 1-D array, or torch tensor.
-        # .item() is defined on both numpy arrays and torch tensors and always returns a scalar.
+        wav_np = np.atleast_1d(wav_out.numpy())
         sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
+        print(f"[step 5] wav_np shape={wav_np.shape} dtype={wav_np.dtype} sr_out={sr_out}", flush=True)
 
-        print(f"[handler] wav shape={wav_np.shape} dtype={wav_np.dtype} sr={sr_out}", flush=True)
+        print("[step 6] wavfile.write", flush=True)
         wavfile.write(str(output_path), sr_out, wav_np)
+        print("[step 6] write OK", flush=True)
 
         output_path_str = f"{user_id}/{job_id}.wav"
         with open(output_path, "rb") as f:
@@ -206,9 +205,10 @@ def handler(job: dict) -> dict:
         return result
     except Exception as e:
         import traceback
-        err_msg = str(e)[:500]
-        print(f"[handler] Job {job_id} failed: {err_msg}", flush=True)
-        print(f"[handler] Traceback:\n{traceback.format_exc()}", flush=True)
+        tb = traceback.format_exc()
+        err_msg = f"{str(e)} ||| TRACE: {tb}"[:1000]
+        print(f"[handler] Job {job_id} failed: {str(e)}", flush=True)
+        print(f"[handler] Traceback:\n{tb}", flush=True)
 
         # Update Supabase job status to failed
         try:
