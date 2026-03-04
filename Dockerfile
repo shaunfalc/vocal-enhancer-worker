@@ -12,7 +12,14 @@
 #   4. (Optional) Mount a network volume at /runpod-volume and set TORCH_HOME=/runpod-volume/torch_cache
 #      so model weights persist across cold starts
 #   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# cuda12.1.1 base has broad GPU support (sm_35 through sm_90) — avoids "no kernel image" errors on RTX 3090/4090.
+# PyTorch 2.4.0 is installed via pip to get torch.serialization.add_safe_globals (required by Resemble Enhance).
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+
+# Upgrade PyTorch to 2.4.0 (CUDA 12.1 wheels) — keeps add_safe_globals, keeps GPU compat
+RUN pip install --no-cache-dir --upgrade \
+    torch==2.4.0+cu121 torchaudio==2.4.0+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
