@@ -90,6 +90,14 @@ def _process_job(job_id: str, input_url: str) -> dict:
     fr = supabase.table("files").select("duration_seconds").eq("id", file_id).single().execute()
     duration_seconds = float(fr.data.get("duration_seconds", 0) or 0)
 
+    def _set_stage(stage: str):
+        """Write processing stage to Supabase so the frontend can show real-time progress."""
+        try:
+            supabase.table("jobs").update({"stage": stage}).eq("id", job_id).execute()
+            print(f"[stage] {stage}", flush=True)
+        except Exception as e:
+            print(f"[stage] failed to set stage={stage}: {e}", flush=True)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = Path(tmpdir) / "input.audio"
         output_path = Path(tmpdir) / "output.wav"
@@ -120,37 +128,27 @@ def _process_job(job_id: str, input_url: str) -> dict:
         import scipy.io.wavfile as wavfile
         from resemble_enhance.enhancer.inference import denoise, enhance
 
-        print("[step 1] torchaudio.load", flush=True)
         dwav, sr = torchaudio.load(str(input_path))
-        print(f"[step 1] dwav shape={dwav.shape} dtype={dwav.dtype} sr={sr} sr_type={type(sr)}", flush=True)
-
-        print("[step 2] mean+device", flush=True)
         dwav = dwav.mean(dim=0)
         device = _get_device()
         dwav = dwav.to(device)
 
-        print("[step 3] denoise", flush=True)
+        _set_stage("denoising")
         wav_denoised, sr_denoise = denoise(dwav, sr, device)
-        print(f"[step 3] wav_denoised shape={wav_denoised.shape} sr_denoise={sr_denoise} type={type(sr_denoise)}", flush=True)
         wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
         wav_denoised = wav_denoised.to(device)
 
-        print("[step 4] enhance", flush=True)
+        _set_stage("enhancing")
         wav_out, new_sr = enhance(
             wav_denoised, sr_denoise, device,
             nfe=64, solver="midpoint", lambd=0.1, tau=0.5
         )
-        print(f"[step 4] wav_out shape={wav_out.shape} dtype={wav_out.dtype} new_sr={new_sr} type={type(new_sr)}", flush=True)
 
-        print("[step 5] tensor→numpy", flush=True)
+        _set_stage("saving")
         wav_out = wav_out.cpu()
         wav_np = np.atleast_1d(wav_out.numpy())
         sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
-        print(f"[step 5] wav_np shape={wav_np.shape} dtype={wav_np.dtype} sr_out={sr_out}", flush=True)
-
-        print("[step 6] wavfile.write", flush=True)
         wavfile.write(str(output_path), sr_out, wav_np)
-        print("[step 6] write OK", flush=True)
 
         output_path_str = f"{user_id}/{job_id}.wav"
         with open(output_path, "rb") as f:
