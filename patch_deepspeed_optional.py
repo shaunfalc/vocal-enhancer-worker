@@ -399,6 +399,34 @@ def patch_enhancer_inference_map_location():
     return True
 
 
+def patch_cfm_numpy2_compat():
+    """Fix numpy >= 2.0 incompatibility in cfm.py.
+
+    scipy.optimize.fsolve returns a 1D numpy array. In numpy < 2.0, float(array)
+    worked for size-1 arrays. In numpy >= 2.0 (shipped with PyTorch 2.4+ images)
+    only 0-dimensional arrays are accepted — so we must index with [0] first.
+
+    Fixes: ValueError: only 0-dimensional arrays can be converted to Python scalars
+    """
+    path = base / "enhancer" / "lcfm" / "cfm.py"
+    if not path.exists():
+        print("patch failed: enhancer/lcfm/cfm.py not found", file=sys.stderr)
+        return False
+    text = path.read_text()
+    old = "a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0))"
+    new = "a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0)[0])  # numpy>=2.0 compat"
+    if new in text:
+        print("Patched", path, ": cfm.py numpy>=2.0 compat (already applied)")
+        return True
+    if old not in text:
+        print("patch failed: cfm.py fsolve line not found", file=sys.stderr)
+        return False
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+    print("Patched", path, ": cfm.py fsolve numpy>=2.0 compat ([0] index)")
+    return True
+
+
 def main():
     if not base.exists():
         print("patch failed: resemble_enhance not found at", base, file=sys.stderr)
@@ -413,6 +441,7 @@ def main():
         and patch_denoiser_inference_map_location()
         and patch_inference_chunk_abs_max_device()
         and patch_inference_chunk_unnormalize_device()
+        and patch_cfm_numpy2_compat()
     )
     if not ok:
         sys.exit(1)
