@@ -1,7 +1,8 @@
 # VocalEnhancer worker: Resemble Enhance on RunPod Serverless.
 # Build from repo root: docker build -t vocal-enhancer-worker .
 #
-# Uses RunPod's official PyTorch base image (cuda12.1.1) — pre-tested on their GPU fleet.
+# Uses RunPod's official PyTorch base image (cuda12.4.1 + PyTorch 2.4) — pre-tested on their GPU fleet.
+# PyTorch 2.4+ required for torch.serialization.add_safe_globals (used by Resemble Enhance).
 # This avoids "no kernel image available" CUDA errors that occur with the generic nvidia/cuda base.
 #
 # RunPod Serverless setup:
@@ -11,7 +12,7 @@
 #   4. (Optional) Mount a network volume at /runpod-volume and set TORCH_HOME=/runpod-volume/torch_cache
 #      so model weights persist across cold starts
 #   5. Set RUNPOD_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint_id>/run in ve-app Vercel env vars
-FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
