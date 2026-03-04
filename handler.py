@@ -130,7 +130,14 @@ def _process_job(job_id: str, input_url: str) -> dict:
             wav_denoised, sr_denoise, device,
             nfe=64, solver="midpoint", lambd=0.1, tau=0.5
         )
-        wav_np = wav_out.cpu().numpy().squeeze()
+        # Ensure wav_out is at least 1-D before converting to numpy
+        # (Resemble Enhance can return a 0-dim scalar for very short/silent audio)
+        wav_out = wav_out.cpu()
+        if wav_out.dim() == 0:
+            wav_out = wav_out.unsqueeze(0)
+        wav_np = wav_out.numpy().squeeze()
+        if wav_np.ndim == 0:
+            wav_np = wav_np.reshape(1)
 
         import scipy.io.wavfile as wavfile
         wavfile.write(str(output_path), int(new_sr), wav_np)
