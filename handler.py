@@ -145,9 +145,10 @@ def _process_job(job_id: str, input_url: str) -> dict:
         # Defensive: ensure wav_np is at least 1-D (squeeze can collapse to 0-dim)
         wav_np = np.atleast_1d(wav_np)
 
-        # Defensive: ensure sample rate is a plain Python int
-        # (Resemble Enhance may return sr as a numpy scalar or tensor)
-        sr_out = int(float(new_sr)) if hasattr(new_sr, '__float__') else int(new_sr)
+        # Defensive: ensure sample rate is a plain Python int.
+        # Resemble Enhance may return sr as a numpy scalar, 1-D array, or torch tensor.
+        # .item() is defined on both numpy arrays and torch tensors and always returns a scalar.
+        sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
 
         print(f"[handler] wav shape={wav_np.shape} dtype={wav_np.dtype} sr={sr_out}", flush=True)
         wavfile.write(str(output_path), sr_out, wav_np)
