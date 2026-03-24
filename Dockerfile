@@ -51,3 +51,21 @@ COPY handler.py .
 
 # RunPod serverless: no port needed — handler.py is the entrypoint
 CMD ["python3", "-u", "handler.py"]
+
+# Fix scipy 0-d array bug in resemble_enhance cfm.py
+# fsolve returns array, float() fails on newer numpy — use [0] indexing instead
+RUN python3 -c "
+import site, os
+for sp in site.getsitepackages():
+    cfm = os.path.join(sp, 'resemble_enhance/enhancer/lcfm/cfm.py')
+    if os.path.exists(cfm):
+        with open(cfm) as f: content = f.read()
+        fixed = content.replace(
+            'a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0))',
+            'a = float(scipy.optimize.fsolve(lambda a: h(1 / n, a) - 0.5, x0=0)[0])'
+        )
+        if fixed != content:
+            with open(cfm, 'w') as f: f.write(fixed)
+            print(f'Patched {cfm}')
+        break
+" || true

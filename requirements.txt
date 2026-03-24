@@ -18,7 +18,7 @@ supabase>=2.0.0
 httpx>=0.25.0
 
 # Optional: scipy for WAV write if needed (torchaudio can write WAV)
-scipy>=1.11.0
+scipy==1.10.1
 
 # Resemble Enhance runtime dependency (used by inference.py)
 tqdm>=4.65.0
