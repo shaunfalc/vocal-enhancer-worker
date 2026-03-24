@@ -7,10 +7,12 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 
@@ -39,6 +41,11 @@ if not WORKER_SECRET:
     raise RuntimeError("WORKER_SECRET or RUNPOD_API_KEY must be set")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+# Marketplace Supabase (for callback_url mode); falls back to ve-app Supabase
+MARKETPLACE_SUPABASE_URL = os.environ.get("MARKETPLACE_SUPABASE_URL") or SUPABASE_URL
+MARKETPLACE_SUPABASE_SERVICE_KEY = os.environ.get("MARKETPLACE_SUPABASE_SERVICE_KEY") or SUPABASE_SERVICE_ROLE_KEY
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -105,21 +112,125 @@ async def run(request: Request):
     inp = body.get("input") or body
     job_id = inp.get("job_id")
     input_url = inp.get("input_url")
-    if not job_id or not input_url:
-        raise HTTPException(status_code=400, detail="job_id and input_url required")
+    callback_url = inp.get("callback_url")
 
-    # Spawn background task and return immediately (stay under 100s proxy timeout)
-    thread = threading.Thread(target=_process_job_with_timeout, args=(job_id, input_url), daemon=True)
+    if not input_url:
+        raise HTTPException(status_code=400, detail="input_url required")
+
+    if callback_url:
+        # Callback mode — no ve-app job lookup needed
+        if not job_id:
+            job_id = str(uuid.uuid4())
+        thread = threading.Thread(
+            target=_process_job_callback_mode,
+            args=(job_id, input_url, callback_url),
+            daemon=True,
+        )
+    else:
+        # Existing ve-app mode — job_id required
+        if not job_id:
+            raise HTTPException(status_code=400, detail="job_id required when callback_url not provided")
+        thread = threading.Thread(
+            target=_process_job_with_timeout,
+            args=(job_id, input_url),
+            daemon=True,
+        )
+
     thread.start()
-
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        content={"status": "accepted", "job_id": job_id},
-        status_code=202,
-    )
+    return JSONResponse(content={"status": "accepted", "job_id": job_id}, status_code=202)
 
 
 PROCESSING_TIMEOUT_SECONDS = 1800  # 30 minutes
+
+
+def _process_job_callback_mode(job_id: str, input_url: str, callback_url: str) -> None:
+    """Callback mode: enhance audio, upload to marketplace Supabase, POST result to callback_url."""
+    import logging
+    logger = logging.getLogger("uvicorn")
+    try:
+        MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.audio"
+            output_path = Path(tmpdir) / "output.wav"
+
+            # Download input audio
+            with httpx.Client(timeout=300.0) as client:
+                try:
+                    head_resp = client.head(input_url)
+                    content_length = head_resp.headers.get("content-length")
+                    if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError(f"File too large ({int(content_length)} bytes). Maximum is 500 MB.")
+                except httpx.HTTPError:
+                    pass
+
+                downloaded = 0
+                with client.stream("GET", input_url) as resp:
+                    resp.raise_for_status()
+                    with open(input_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            downloaded += len(chunk)
+                            if downloaded > MAX_DOWNLOAD_BYTES:
+                                raise RuntimeError(f"File exceeds 500 MB limit (downloaded {downloaded} bytes). Aborting.")
+                            f.write(chunk)
+
+            # Resemble Enhance: denoise + enhance
+            import torch
+            import torchaudio
+            from resemble_enhance.enhancer.inference import denoise, enhance
+
+            dwav, sr = torchaudio.load(str(input_path))
+            dwav = dwav.mean(dim=0)
+            device = _get_device()
+            dwav = dwav.to(device)
+
+            wav_denoised, sr_denoise = denoise(dwav, sr, device)
+            wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
+            wav_denoised = wav_denoised.to(device)
+            wav_out, new_sr = enhance(
+                wav_denoised, sr_denoise, device,
+                nfe=64, solver="midpoint", lambd=0.1, tau=0.5
+            )
+            wav_np = wav_out.cpu().numpy().squeeze()
+
+            import scipy.io.wavfile as wavfile
+            wavfile.write(str(output_path), int(new_sr), wav_np)
+
+            # Upload to marketplace Supabase bucket "ai-uploads"
+            marketplace_sb: Client = create_client(MARKETPLACE_SUPABASE_URL, MARKETPLACE_SUPABASE_SERVICE_KEY)
+            upload_path = f"{job_id}/output.wav"
+            with open(output_path, "rb") as f:
+                marketplace_sb.storage.from_("ai-uploads").upload(
+                    upload_path,
+                    f.read(),
+                    file_options={"content-type": "audio/wav", "upsert": "true"},
+                )
+
+            # Get public URL
+            public_url = marketplace_sb.storage.from_("ai-uploads").get_public_url(upload_path)
+
+        # POST success to callback_url
+        with httpx.Client(timeout=30.0) as client:
+            client.post(callback_url, json={
+                "job_id": job_id,
+                "status": "completed",
+                "output_url": public_url,
+                "error": None,
+            })
+        logger.info("Callback mode job %s completed successfully", job_id)
+
+    except Exception as e:
+        logger.error("Callback mode job %s failed: %s", job_id, e)
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                client.post(callback_url, json={
+                    "job_id": job_id,
+                    "status": "failed",
+                    "output_url": None,
+                    "error": str(e)[:500],
+                })
+        except Exception:
+            logger.error("Failed to POST error callback for job %s", job_id)
 
 
 def _process_job_with_timeout(job_id: str, input_url: str) -> None:
