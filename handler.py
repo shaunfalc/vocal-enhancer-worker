@@ -1,12 +1,17 @@
 """
 VocalEnhancer serverless handler for RunPod.
-Converts the FastAPI always-on pod to a RunPod serverless worker.
 
-Input payload (from ve-app dispatch.ts):
-    { "input": { "job_id": "<uuid>", "input_url": "<signed-url>" } }
+Supports two modes:
+  1. Marketplace mode (callback_url present in input):
+     - Reads input_url directly from payload
+     - Uploads output to Supabase storage
+     - Calls callback_url to update ai_jobs table
+  2. Legacy ve-app mode (no callback_url):
+     - Reads job/file info from Supabase "jobs" + "files" tables
+     - Updates those tables directly
 
-The handler updates job status directly in Supabase — ve-app polls Supabase,
-so no RunPod polling is required on the app side.
+Input payload:
+    { "input": { "job_id": "<uuid>", "input_url": "<signed-url>", "callback_url?": "..." } }
 
 Model caching:
     Set TORCH_HOME env var on the RunPod endpoint to a network volume path
@@ -71,11 +76,113 @@ _prewarm_models()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
-PROCESSING_TIMEOUT_SECONDS = 1800       # 30 min (RunPod serverless max is configurable)
 
 
-# ── Core processing logic (unchanged from app.py) ────────────────────────────
-def _process_job(job_id: str, input_url: str) -> dict:
+# ── Enhancement pipeline (shared by both modes) ──────────────────────────────
+def _enhance_audio(input_path: Path, output_path: Path):
+    """Run denoise + enhance on an audio file. Returns nothing; writes to output_path."""
+    import torch
+    import torchaudio
+    import numpy as np
+    import scipy.io.wavfile as wavfile
+    from resemble_enhance.enhancer.inference import denoise, enhance
+
+    dwav, sr = torchaudio.load(str(input_path))
+    dwav = dwav.mean(dim=0)
+    device = _get_device()
+    dwav = dwav.to(device)
+
+    print("[enhance] Denoising…", flush=True)
+    wav_denoised, sr_denoise = denoise(dwav, sr, device)
+    wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
+    wav_denoised = wav_denoised.to(device)
+
+    print("[enhance] Enhancing…", flush=True)
+    wav_out, new_sr = enhance(
+        wav_denoised, sr_denoise, device,
+        nfe=64, solver="midpoint", lambd=0.1, tau=0.5
+    )
+
+    print("[enhance] Saving…", flush=True)
+    wav_out = wav_out.cpu()
+    wav_np = np.atleast_1d(wav_out.numpy())
+    sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
+    wavfile.write(str(output_path), sr_out, wav_np)
+
+
+def _download_audio(input_url: str, input_path: Path):
+    """Download audio file with size limit."""
+    with httpx.Client(timeout=300.0) as client:
+        try:
+            head_resp = client.head(input_url)
+            content_length = head_resp.headers.get("content-length")
+            if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+                raise RuntimeError(f"File too large ({int(content_length)} bytes). Maximum is 500 MB.")
+        except httpx.HTTPError:
+            pass
+
+        downloaded = 0
+        with client.stream("GET", input_url) as resp:
+            resp.raise_for_status()
+            with open(input_path, "wb") as f:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError("File exceeds 500 MB limit. Aborting.")
+                    f.write(chunk)
+
+
+# ── Marketplace mode (ai_jobs table, callback URL) ───────────────────────────
+def _process_marketplace_job(job_id: str, input_url: str, callback_url: str) -> dict:
+    """Process a job from the marketplace. Uses callback_url to report results."""
+    start_time = time.time()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / "input.audio"
+        output_path = Path(tmpdir) / "output.wav"
+
+        _download_audio(input_url, input_path)
+        _enhance_audio(input_path, output_path)
+
+        # Upload output to Supabase storage
+        output_storage_path = f"enhanced/{job_id}.wav"
+        with open(output_path, "rb") as f:
+            supabase.storage.from_("ai-uploads").upload(
+                output_storage_path,
+                f.read(),
+                file_options={"content-type": "audio/wav", "upsert": "true"},
+            )
+
+    # Get public URL for the output
+    url_data = supabase.storage.from_("ai-uploads").get_public_url(output_storage_path)
+    output_url = url_data if isinstance(url_data, str) else url_data
+
+    processing_seconds = round(time.time() - start_time, 2)
+    print(f"[marketplace] Job {job_id} enhanced in {processing_seconds}s", flush=True)
+
+    # Call back to marketplace to update ai_jobs
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(callback_url, json={
+                "job_id": job_id,
+                "status": "completed",
+                "output_url": output_url,
+            })
+            print(f"[marketplace] Callback response: {resp.status_code}", flush=True)
+    except Exception as e:
+        print(f"[marketplace] Callback failed (non-fatal): {e}", flush=True)
+        # Non-fatal: the marketplace also polls RunPod status as fallback
+
+    return {
+        "job_id": job_id,
+        "output_url": output_url,
+        "processing_seconds": processing_seconds,
+    }
+
+
+# ── Legacy ve-app mode (jobs + files tables) ─────────────────────────────────
+def _process_legacy_job(job_id: str, input_url: str) -> dict:
+    """Process a job from ve-app. Updates jobs/files tables directly in Supabase."""
     start_time = time.time()
 
     # Idempotency: re-fetch job; skip if not in processing state
@@ -102,54 +209,13 @@ def _process_job(job_id: str, input_url: str) -> dict:
         input_path = Path(tmpdir) / "input.audio"
         output_path = Path(tmpdir) / "output.wav"
 
-        # Download with size limit
-        with httpx.Client(timeout=300.0) as client:
-            try:
-                head_resp = client.head(input_url)
-                content_length = head_resp.headers.get("content-length")
-                if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
-                    raise RuntimeError(f"File too large ({int(content_length)} bytes). Maximum is 500 MB.")
-            except httpx.HTTPError:
-                pass
-
-            downloaded = 0
-            with client.stream("GET", input_url) as resp:
-                resp.raise_for_status()
-                with open(input_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        downloaded += len(chunk)
-                        if downloaded > MAX_DOWNLOAD_BYTES:
-                            raise RuntimeError(f"File exceeds 500 MB limit. Aborting.")
-                        f.write(chunk)
-
-        import torch
-        import torchaudio
-        import numpy as np
-        import scipy.io.wavfile as wavfile
-        from resemble_enhance.enhancer.inference import denoise, enhance
-
-        dwav, sr = torchaudio.load(str(input_path))
-        dwav = dwav.mean(dim=0)
-        device = _get_device()
-        dwav = dwav.to(device)
+        _set_stage("downloading")
+        _download_audio(input_url, input_path)
 
         _set_stage("denoising")
-        wav_denoised, sr_denoise = denoise(dwav, sr, device)
-        wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
-        wav_denoised = wav_denoised.to(device)
-
-        _set_stage("enhancing")
-        wav_out, new_sr = enhance(
-            wav_denoised, sr_denoise, device,
-            nfe=64, solver="midpoint", lambd=0.1, tau=0.5
-        )
+        _enhance_audio(input_path, output_path)
 
         _set_stage("saving")
-        wav_out = wav_out.cpu()
-        wav_np = np.atleast_1d(wav_out.numpy())
-        sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
-        wavfile.write(str(output_path), sr_out, wav_np)
-
         output_path_str = f"{user_id}/{job_id}.wav"
         with open(output_path, "rb") as f:
             supabase.storage.from_("outputs").upload(
@@ -186,21 +252,32 @@ def _process_job(job_id: str, input_url: str) -> dict:
 def handler(job: dict) -> dict:
     """
     RunPod serverless entry point.
-    job["input"] = { "job_id": str, "input_url": str }
+    job["input"] = { "job_id": str, "input_url": str, "callback_url?": str }
+
+    If callback_url is present → marketplace mode (ai_jobs table, callback).
+    Otherwise → legacy ve-app mode (jobs + files tables).
     """
     inp = job.get("input", {})
     job_id = inp.get("job_id")
     input_url = inp.get("input_url")
+    callback_url = inp.get("callback_url")
 
     if not job_id or not input_url:
         return {"error": "job_id and input_url are required"}
 
-    print(f"[handler] Processing job {job_id}", flush=True)
+    is_marketplace = bool(callback_url)
+    mode = "marketplace" if is_marketplace else "ve-app"
+    print(f"[handler] Processing job {job_id} (mode={mode})", flush=True)
 
     try:
-        result = _process_job(job_id, input_url)
+        if is_marketplace:
+            result = _process_marketplace_job(job_id, input_url, callback_url)
+        else:
+            result = _process_legacy_job(job_id, input_url)
+
         print(f"[handler] Job {job_id} complete: {result}", flush=True)
         return result
+
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -208,29 +285,41 @@ def handler(job: dict) -> dict:
         print(f"[handler] Job {job_id} failed: {str(e)}", flush=True)
         print(f"[handler] Traceback:\n{tb}", flush=True)
 
-        # Update Supabase job status to failed
-        try:
-            supabase.table("jobs").update({
-                "status": "failed",
-                "error_message": err_msg,
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }).eq("id", job_id).execute()
-        except Exception:
-            pass
+        if is_marketplace:
+            # Call back with failure
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    client.post(callback_url, json={
+                        "job_id": job_id,
+                        "status": "failed",
+                        "error": str(e)[:500],
+                    })
+            except Exception:
+                pass
+        else:
+            # Legacy: update jobs table directly
+            try:
+                supabase.table("jobs").update({
+                    "status": "failed",
+                    "error_message": err_msg,
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }).eq("id", job_id).execute()
+            except Exception:
+                pass
 
-        # Refund credits
-        try:
-            jr = supabase.table("jobs").select("user_id, file_id").eq("id", job_id).single().execute()
-            if jr.data:
-                fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
-                dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
-                dur_min = math.ceil(dur_sec / 60.0)
-                supabase.rpc("refund_usage_and_credit", {
-                    "p_user_id": jr.data["user_id"],
-                    "p_duration_minutes": dur_min,
-                }).execute()
-        except Exception as refund_err:
-            print(f"[handler] Refund failed for job {job_id}: {refund_err}", flush=True)
+            # Legacy: refund credits
+            try:
+                jr = supabase.table("jobs").select("user_id, file_id").eq("id", job_id).single().execute()
+                if jr.data:
+                    fr = supabase.table("files").select("duration_seconds").eq("id", jr.data["file_id"]).single().execute()
+                    dur_sec = float((fr.data or {}).get("duration_seconds", 0) or 0)
+                    dur_min = math.ceil(dur_sec / 60.0)
+                    supabase.rpc("refund_usage_and_credit", {
+                        "p_user_id": jr.data["user_id"],
+                        "p_duration_minutes": dur_min,
+                    }).execute()
+            except Exception as refund_err:
+                print(f"[handler] Refund failed for job {job_id}: {refund_err}", flush=True)
 
         # Re-raise so RunPod marks this job as FAILED
         raise
