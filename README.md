@@ -18,17 +18,10 @@ Python worker for VocalEnhancer: accepts enhancement jobs, runs [Resemble Enhanc
    - `RUNPOD_ENDPOINT_URL` = `https://api.runpod.ai/v2/<your-endpoint-id>/run`
    - `RUNPOD_API_KEY` = your RunPod API key (runpod.io → Settings → API Keys)
 
-## Push to GitHub
+**Repo:** `shaunfalc/vocal-enhancer-worker`
+**Shared by:** marketplace (vocalpresets.com) + ve-app (vocalenhancer.com)
 
-From the repo root:
-
-```bash
-git remote add origin https://github.com/YOUR_ORG/vocal-enhancer-worker.git
-git branch -M main
-git push -u origin main
-```
-
-Or with SSH: `git@github.com:YOUR_ORG/vocal-enhancer-worker.git`. Create the repository on GitHub first (empty, no README).
+---
 
 ## Contract
 
@@ -69,18 +62,9 @@ A workflow builds and pushes the Docker image to **GitHub Container Registry** o
 
 ## Docker (for RunPod)
 
-**If this worker is its own Git repo** (root = this folder):
-
 ```bash
 docker build -t vocal-enhancer-worker .
 docker run --env-file .env -p 8000:8000 vocal-enhancer-worker
-```
-
-**If this worker lives inside a monorepo** (e.g. `Vocal Enhancer/vocal-enhancer-worker`), from the **monorepo root**:
-
-```bash
-docker build -t vocal-enhancer-worker -f vocal-enhancer-worker/Dockerfile vocal-enhancer-worker
-docker run --env-file vocal-enhancer-worker/.env -p 8000:8000 vocal-enhancer-worker
 ```
 
 If you see **"No module named 'deepspeed'"**, do a clean rebuild so the patch is applied:  

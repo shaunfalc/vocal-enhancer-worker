@@ -25,16 +25,24 @@ wheels/
 venv/
 ENV/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
 # Env (secrets)
 .env
 .env.local
 .env.*.local
+.env.production
+
+# IDE / AI tooling
+.claude/
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Temp / local
 *.log
