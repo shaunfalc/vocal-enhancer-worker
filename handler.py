@@ -17,6 +17,9 @@ Model caching:
     Set TORCH_HOME env var on the RunPod endpoint to a network volume path
     (e.g. /runpod-volume/torch_cache) so model weights persist across cold starts.
 """
+import hashlib
+import hmac
+import json
 import math
 import os
 import tempfile
@@ -30,6 +33,21 @@ from supabase import create_client, Client
 # ── Config ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+# HMAC secret for signing marketplace callbacks. Must match VE_WEBHOOK_SECRET
+# on the marketplace (vocalpresets.com) side. Falls back to legacy name.
+MARKETPLACE_WEBHOOK_SECRET = (
+    os.environ.get("MARKETPLACE_WEBHOOK_SECRET")
+    or os.environ.get("VE_WEBHOOK_SECRET")
+    or ""
+)
+
+# Output bucket for marketplace mode. The marketplace Supabase has private
+# `uploads` (input) + `outputs` (output) buckets — see
+# 20260324180000_rename_storage_buckets_to_match_ve.sql.
+MARKETPLACE_OUTPUT_BUCKET = os.environ.get("MARKETPLACE_OUTPUT_BUCKET", "outputs")
+# 7 days — matches the "files available for 7 days" UX copy on result screen.
+MARKETPLACE_SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
@@ -79,8 +97,16 @@ MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
 # ── Enhancement pipeline (shared by both modes) ──────────────────────────────
-def _enhance_audio(input_path: Path, output_path: Path):
-    """Run denoise + enhance on an audio file. Returns nothing; writes to output_path."""
+def _enhance_audio(input_path: Path, output_path: Path, do_denoise: bool = True, do_derev: bool = True):
+    """
+    Run the requested pipeline on an audio file. Writes WAV to output_path.
+
+    do_denoise / do_derev semantics (mirroring the marketplace UI toggles):
+      - denoise=True,  derev=True  → full pipeline (denoise → enhance)
+      - denoise=True,  derev=False → denoise only (no dereverb / super-res)
+      - denoise=False, derev=True  → enhance only (resemble's enhance also denoises internally)
+      - denoise=False, derev=False → caller should reject; treated as a no-op passthrough copy
+    """
     import torch
     import torchaudio
     import numpy as np
@@ -92,22 +118,62 @@ def _enhance_audio(input_path: Path, output_path: Path):
     device = _get_device()
     dwav = dwav.to(device)
 
-    print("[enhance] Denoising…", flush=True)
-    wav_denoised, sr_denoise = denoise(dwav, sr, device)
-    wav_denoised = wav_denoised.squeeze(0) if wav_denoised.dim() > 1 else wav_denoised
-    wav_denoised = wav_denoised.to(device)
+    if not do_denoise and not do_derev:
+        # Defensive — UI gates against this, but if it slips through, just copy.
+        print("[enhance] No-op (both toggles off); writing input through.", flush=True)
+        wav_np = np.atleast_1d(dwav.cpu().numpy())
+        wavfile.write(str(output_path), int(sr), wav_np)
+        return
 
-    print("[enhance] Enhancing…", flush=True)
-    wav_out, new_sr = enhance(
-        wav_denoised, sr_denoise, device,
-        nfe=64, solver="midpoint", lambd=0.1, tau=0.5
-    )
+    if do_derev:
+        # Full pipeline: optional pre-denoise + enhance (which itself denoises + dereverbs)
+        if do_denoise:
+            print("[enhance] Denoising (pre-pass)…", flush=True)
+            wav_pre, sr_pre = denoise(dwav, sr, device)
+            wav_pre = wav_pre.squeeze(0) if wav_pre.dim() > 1 else wav_pre
+            wav_pre = wav_pre.to(device)
+        else:
+            wav_pre, sr_pre = dwav, sr
+
+        print("[enhance] Enhancing (denoise + dereverb)…", flush=True)
+        wav_out, new_sr = enhance(
+            wav_pre, sr_pre, device,
+            nfe=64, solver="midpoint", lambd=0.1, tau=0.5,
+        )
+    else:
+        # Denoise only
+        print("[enhance] Denoising only…", flush=True)
+        wav_out, new_sr = denoise(dwav, sr, device)
+        wav_out = wav_out.squeeze(0) if wav_out.dim() > 1 else wav_out
 
     print("[enhance] Saving…", flush=True)
     wav_out = wav_out.cpu()
     wav_np = np.atleast_1d(wav_out.numpy())
     sr_out = int(new_sr.item()) if hasattr(new_sr, 'item') else int(new_sr)
     wavfile.write(str(output_path), sr_out, wav_np)
+
+
+# ── Marketplace callback (signed) ─────────────────────────────────────────────
+def _post_marketplace_callback(callback_url: str, payload: dict) -> None:
+    """POST a JSON payload to the marketplace callback, signed with HMAC-SHA256."""
+    body = json.dumps(payload, separators=(",", ":"))
+    headers = {"Content-Type": "application/json"}
+    if MARKETPLACE_WEBHOOK_SECRET:
+        sig = hmac.new(
+            MARKETPLACE_WEBHOOK_SECRET.encode("utf-8"),
+            body.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Webhook-Signature"] = sig
+    else:
+        print(
+            "[marketplace] WARNING: MARKETPLACE_WEBHOOK_SECRET unset — "
+            "callback will be rejected as 401 by marketplace.",
+            flush=True,
+        )
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.post(callback_url, content=body, headers=headers)
+        print(f"[marketplace] Callback {callback_url} → {resp.status_code}", flush=True)
 
 
 def _download_audio(input_url: str, input_path: Path):
@@ -133,7 +199,13 @@ def _download_audio(input_url: str, input_path: Path):
 
 
 # ── Marketplace mode (ai_jobs table, callback URL) ───────────────────────────
-def _process_marketplace_job(job_id: str, input_url: str, callback_url: str) -> dict:
+def _process_marketplace_job(
+    job_id: str,
+    input_url: str,
+    callback_url: str,
+    do_denoise: bool = True,
+    do_derev: bool = True,
+) -> dict:
     """Process a job from the marketplace. Uses callback_url to report results."""
     start_time = time.time()
 
@@ -142,33 +214,42 @@ def _process_marketplace_job(job_id: str, input_url: str, callback_url: str) -> 
         output_path = Path(tmpdir) / "output.wav"
 
         _download_audio(input_url, input_path)
-        _enhance_audio(input_path, output_path)
+        _enhance_audio(input_path, output_path, do_denoise=do_denoise, do_derev=do_derev)
 
-        # Upload output to Supabase storage
-        output_storage_path = f"enhanced/{job_id}.wav"
+        # Upload to private `outputs` bucket on the marketplace Supabase.
+        # Path matches the legacy ve-app convention so RLS policies line up.
+        output_storage_path = f"{job_id}/output.wav"
         with open(output_path, "rb") as f:
-            supabase.storage.from_("ai-uploads").upload(
+            supabase.storage.from_(MARKETPLACE_OUTPUT_BUCKET).upload(
                 output_storage_path,
                 f.read(),
                 file_options={"content-type": "audio/wav", "upsert": "true"},
             )
 
-    # Get public URL for the output
-    url_data = supabase.storage.from_("ai-uploads").get_public_url(output_storage_path)
-    output_url = url_data if isinstance(url_data, str) else url_data
+    # `outputs` is private — issue a signed URL that survives the 7-day result window.
+    signed = supabase.storage.from_(MARKETPLACE_OUTPUT_BUCKET).create_signed_url(
+        output_storage_path, MARKETPLACE_SIGNED_URL_TTL_SECONDS,
+    )
+    output_url = (
+        signed.get("signedURL")
+        or signed.get("signed_url")
+        or signed.get("signedUrl")
+        if isinstance(signed, dict)
+        else None
+    )
+    if not output_url:
+        raise RuntimeError(f"Failed to create signed URL for output: {signed!r}")
 
     processing_seconds = round(time.time() - start_time, 2)
     print(f"[marketplace] Job {job_id} enhanced in {processing_seconds}s", flush=True)
 
-    # Call back to marketplace to update ai_jobs
+    # Signed callback to marketplace to update ai_jobs
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.post(callback_url, json={
-                "job_id": job_id,
-                "status": "completed",
-                "output_url": output_url,
-            })
-            print(f"[marketplace] Callback response: {resp.status_code}", flush=True)
+        _post_marketplace_callback(callback_url, {
+            "job_id": job_id,
+            "status": "completed",
+            "output_url": output_url,
+        })
     except Exception as e:
         print(f"[marketplace] Callback failed (non-fatal): {e}", flush=True)
         # Non-fatal: the marketplace also polls RunPod status as fallback
@@ -261,17 +342,26 @@ def handler(job: dict) -> dict:
     job_id = inp.get("job_id")
     input_url = inp.get("input_url")
     callback_url = inp.get("callback_url")
+    # Marketplace UI toggles. Default true to preserve legacy "always full pipeline" behavior.
+    do_denoise = bool(inp.get("denoise", True))
+    do_derev = bool(inp.get("derev", True))
 
     if not job_id or not input_url:
         return {"error": "job_id and input_url are required"}
 
     is_marketplace = bool(callback_url)
     mode = "marketplace" if is_marketplace else "ve-app"
-    print(f"[handler] Processing job {job_id} (mode={mode})", flush=True)
+    print(
+        f"[handler] Processing job {job_id} (mode={mode}, denoise={do_denoise}, derev={do_derev})",
+        flush=True,
+    )
 
     try:
         if is_marketplace:
-            result = _process_marketplace_job(job_id, input_url, callback_url)
+            result = _process_marketplace_job(
+                job_id, input_url, callback_url,
+                do_denoise=do_denoise, do_derev=do_derev,
+            )
         else:
             result = _process_legacy_job(job_id, input_url)
 
@@ -286,14 +376,13 @@ def handler(job: dict) -> dict:
         print(f"[handler] Traceback:\n{tb}", flush=True)
 
         if is_marketplace:
-            # Call back with failure
+            # Signed callback with failure so marketplace can refund + show error
             try:
-                with httpx.Client(timeout=15.0) as client:
-                    client.post(callback_url, json={
-                        "job_id": job_id,
-                        "status": "failed",
-                        "error": str(e)[:500],
-                    })
+                _post_marketplace_callback(callback_url, {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": str(e)[:500],
+                })
             except Exception:
                 pass
         else:
