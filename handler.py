@@ -249,6 +249,8 @@ def _process_marketplace_job(
             "job_id": job_id,
             "status": "completed",
             "output_url": output_url,
+            # Processing time, for the marketplace's cost per job
+            "processing_ms": int(processing_seconds * 1000),
         })
     except Exception as e:
         print(f"[marketplace] Callback failed (non-fatal): {e}", flush=True)
